@@ -1,0 +1,19 @@
+project_name: att
+
+builds:
+  - binary: att
+    main: .
+    ldflags:
+      - -s -w -X github.com/sestinj/att/cmd.version={{.Version}}
+    goos:
+      - linux
+      - darwin
+    goarch:
+      - amd64
+      - arm64
+
+archives:
+  - format: tar.gz
+
+changelog:
+  sort: asc
