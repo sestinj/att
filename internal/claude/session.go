@@ -119,6 +119,7 @@ func findRecentJSONLs(dir string, cutoff time.Time) []jsonlFile {
 
 type jsonlEntry struct {
 	Type        string           `json:"type"`
+	Subtype     string           `json:"subtype,omitempty"`
 	CWD         string           `json:"cwd,omitempty"`
 	SessionID   string           `json:"sessionId,omitempty"`
 	Message     *messageEnvelope `json:"message,omitempty"`
@@ -165,12 +166,10 @@ type contentBlock struct {
 //   - assistant entries set the state based on stop_reason and content
 //   - user entries reset state to Working (Claude will process them)
 //   - progress entries upgrade ToolPermission to Working (tool is executing)
+//   - system entries handle api errors (retrying = Working)
+//   - non-conversation entries are skipped entirely
 //
-// This correctly handles:
-//   - Old Claude versions where all stop_reasons are null
-//   - Tool permission waits (tool_use with no subsequent execution)
-//   - Streaming partials (null stop_reason with partial content)
-//   - Sidechain/subagent entries (skipped)
+// Unknown entry types default to not needing attention (no state change).
 func ClassifySessionState(data []byte) SessionState {
 	state := StateUnknown
 
@@ -197,22 +196,34 @@ func ClassifySessionState(data []byte) SessionState {
 
 		case "user":
 			if entry.Message != nil {
-				// User sent text or a tool result came back. Either way
-				// Claude will generate a response -> Working.
 				state = StateWorking
 			}
 
 		case "progress":
 			if entry.Data != nil {
 				switch entry.Data.Type {
-				case "bash_progress", "mcp_progress", "agent_progress":
+				case "bash_progress", "mcp_progress", "agent_progress", "waiting_for_task":
 					// Execution progress means the tool is actually running,
 					// not waiting for permission.
 					if state == StateToolPermission {
 						state = StateWorking
 					}
+				// hook_progress: does NOT indicate tool execution, no state change.
 				}
 			}
+
+		case "system":
+			switch entry.Subtype {
+			case "api_error":
+				// Claude Code is retrying an API call — still working.
+				state = StateWorking
+			// stop_hook_summary, turn_duration, compact_boundary, local_command:
+			// Post-turn bookkeeping or informational. No state change.
+			}
+
+		// Non-conversation entry types: no state change.
+		// file-history-snapshot, queue-operation, pr-link, custom-title, agent-name,
+		// and any unknown future types are ignored — defaulting to not needing attention.
 		}
 	}
 

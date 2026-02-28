@@ -349,6 +349,110 @@ func TestClassifySessionState(t *testing.T) {
 			want: StateAsking,
 		},
 
+		// === System entries ===
+		{
+			name: "working: api_error means retrying",
+			lines: []string{
+				mainAssistant("tool_use", tool("Bash")),
+				progressEntry("bash_progress"),
+				userToolResult(),
+				systemEntry("api_error"),
+			},
+			want: StateWorking,
+		},
+		{
+			name: "working: api_error overrides idle",
+			lines: []string{
+				mainAssistant("end_turn", text()),
+				systemEntry("api_error"),
+			},
+			want: StateWorking,
+		},
+		{
+			name: "idle: stop_hook_summary and turn_duration don't change state",
+			lines: []string{
+				mainAssistant("end_turn", text()),
+				systemEntry("stop_hook_summary"),
+				systemEntry("turn_duration"),
+			},
+			want: StateIdle,
+		},
+		{
+			name: "unknown: compact_boundary alone",
+			lines: []string{
+				systemEntry("compact_boundary"),
+			},
+			want: StateUnknown,
+		},
+		{
+			name: "idle: local_command doesn't change state",
+			lines: []string{
+				mainAssistant("end_turn", text()),
+				systemEntry("local_command"),
+			},
+			want: StateIdle,
+		},
+
+		// === Progress: waiting_for_task ===
+		{
+			name: "working: waiting_for_task upgrades permission",
+			lines: []string{
+				mainAssistant("tool_use", tool("TaskOutput")),
+				progressEntry("waiting_for_task"),
+			},
+			want: StateWorking,
+		},
+
+		// === Non-conversation entry types ===
+		{
+			name: "idle: file-history-snapshot doesn't change state",
+			lines: []string{
+				mainAssistant("end_turn", text()),
+				`{"type":"file-history-snapshot","messageId":"abc"}`,
+			},
+			want: StateIdle,
+		},
+		{
+			name: "idle: queue-operation doesn't change state",
+			lines: []string{
+				mainAssistant("end_turn", text()),
+				`{"type":"queue-operation","operation":"enqueue"}`,
+			},
+			want: StateIdle,
+		},
+		{
+			name: "idle: pr-link doesn't change state",
+			lines: []string{
+				mainAssistant("end_turn", text()),
+				`{"type":"pr-link","prNumber":42}`,
+			},
+			want: StateIdle,
+		},
+		{
+			name: "idle: custom-title doesn't change state",
+			lines: []string{
+				mainAssistant("end_turn", text()),
+				`{"type":"custom-title","customTitle":"my session"}`,
+			},
+			want: StateIdle,
+		},
+		{
+			name: "idle: agent-name doesn't change state",
+			lines: []string{
+				mainAssistant("end_turn", text()),
+				`{"type":"agent-name","agentName":"Agent Foo"}`,
+			},
+			want: StateIdle,
+		},
+		{
+			name: "idle: unknown future entry type doesn't change state",
+			lines: []string{
+				mainAssistant("end_turn", text()),
+				`{"type":"some-future-type","data":"whatever"}`,
+			},
+			want: StateIdle,
+		},
+
 		// === Edge cases ===
 		{
 			name: "edge: assistant with no message field",
