@@ -64,7 +64,47 @@ func WithRefreshInterval(d time.Duration) FeedOption {
 	return func(fc *FeedController) { fc.refreshInterval = d }
 }
 
+// cleanupStale removes att-feed-* tmux sessions and /tmp/att-feed-*.fifo
+// files left behind by previous att processes that crashed (SIGKILL, etc.)
+// without running their deferred cleanup.
+func (fc *FeedController) cleanupStale() {
+	// Kill grouped feed sessions whose PID no longer exists
+	sessions, _ := exec.Command("tmux", "list-sessions", "-F", "#{session_name}").Output()
+	for _, name := range strings.Split(strings.TrimSpace(string(sessions)), "\n") {
+		if !strings.HasPrefix(name, "att-feed-") {
+			continue
+		}
+		pidStr := strings.TrimPrefix(name, "att-feed-")
+		pid, err := strconv.Atoi(pidStr)
+		if err != nil {
+			continue
+		}
+		// Check if the PID is still alive
+		if err := syscall.Kill(pid, 0); err != nil {
+			KillSession(name)
+		}
+	}
+
+	// Remove stale FIFOs
+	matches, _ := filepath.Glob("/tmp/att-feed-*.fifo")
+	for _, path := range matches {
+		base := filepath.Base(path)
+		pidStr := strings.TrimPrefix(base, "att-feed-")
+		pidStr = strings.TrimSuffix(pidStr, ".fifo")
+		pid, err := strconv.Atoi(pidStr)
+		if err != nil {
+			continue
+		}
+		if err := syscall.Kill(pid, 0); err != nil {
+			os.Remove(path)
+		}
+	}
+}
+
 func (fc *FeedController) Run() error {
+	// Clean up stale feed sessions and FIFOs from previous crashes
+	fc.cleanupStale()
+
 	// Ensure base att tmux session exists
 	if !HasSession(fc.baseSession) {
 		if _, err := NewSession(fc.baseSession, "shell", "", ""); err != nil {
@@ -109,9 +149,9 @@ func (fc *FeedController) Run() error {
 	defer fc.unbindKeys()
 	defer fc.restoreStatus()
 
-	// Handle signals for clean shutdown
+	// Handle signals for clean shutdown (SIGHUP from tmux session destroy)
 	sigCh := make(chan os.Signal, 1)
-	signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM)
+	signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM, syscall.SIGHUP)
 
 	// Open FIFO (O_RDWR so open doesn't block)
 	fifo, err := os.OpenFile(fc.fifoPath, os.O_RDWR, os.ModeNamedPipe)

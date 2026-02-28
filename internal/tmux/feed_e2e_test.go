@@ -88,13 +88,22 @@ func (e *feedE2E) start() {
 	deadline := time.Now().Add(5 * time.Second)
 	for time.Now().Before(deadline) {
 		if _, err := os.Stat(e.fifo); err == nil {
-			// Wait for initial refresh to complete
-			time.Sleep(300 * time.Millisecond)
+			break
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+	if _, err := os.Stat(e.fifo); err != nil {
+		e.t.Fatal("feed did not start within 5 seconds")
+	}
+
+	// Wait for status bar to be populated (initial refresh complete)
+	for time.Now().Before(deadline) {
+		if bar := e.sessionBar(); bar != "" {
 			return
 		}
 		time.Sleep(50 * time.Millisecond)
 	}
-	e.t.Fatal("feed did not start within 5 seconds")
+	e.t.Fatal("feed status bar not populated within 5 seconds")
 }
 
 // stop sends the quit command and waits for Run() to return.
@@ -120,7 +129,7 @@ func (e *feedE2E) send(cmd string) {
 	}
 	defer f.Close()
 	fmt.Fprintln(f, cmd)
-	time.Sleep(100 * time.Millisecond) // let the event loop process
+	time.Sleep(300 * time.Millisecond) // let the event loop process and update status bar
 }
 
 // sessionBar reads status-left -- the session entries the user sees.
