@@ -205,6 +205,8 @@ func (fc *FeedController) Run() error {
 			case cmd == "quit":
 				quitFn()
 				return nil
+			case cmd == "kill":
+				fc.killCurrent()
 			case strings.HasPrefix(cmd, "new "):
 				dir := strings.TrimPrefix(cmd, "new ")
 				fc.newSession(dir)
@@ -431,6 +433,25 @@ func (fc *FeedController) newSession(dir string) {
 	fc.updateStatusBar()
 }
 
+func (fc *FeedController) killCurrent() {
+	if len(fc.allWindows) == 0 {
+		return
+	}
+	w := fc.allWindows[fc.cursor]
+
+	// Clear any dismissed state for this window's session
+	if s, ok := fc.stateByWindow[fc.cursor]; ok && s.SessionFile != "" {
+		delete(fc.dismissed, s.SessionFile)
+	}
+
+	// Kill the tmux window (sends SIGHUP to claude, closing it)
+	KillWindow(fc.baseSession, w.Index)
+
+	// Refresh to pick up the removed window
+	fc.refresh()
+	fc.updateStatusBar()
+}
+
 func (fc *FeedController) updateStatusBar() {
 	if len(fc.allWindows) == 0 {
 		SetStatusRightForSession(fc.sessionName, "att | No windows | ^Q quit")
@@ -458,6 +479,7 @@ func (fc *FeedController) bindKeys() {
 	BindKey("M-[", fmt.Sprintf("echo prev > %s", fifo))
 	BindKey("M-Enter", fmt.Sprintf("echo dismiss > %s", fifo))
 	BindKey("C-q", fmt.Sprintf("echo quit > %s", fifo))
+	BindKey("M-d", fmt.Sprintf("echo kill > %s", fifo))
 	BindKeyDirect("M-n",
 		"command-prompt", "-I", "#{pane_current_path}", "-p", "New session:",
 		fmt.Sprintf("run-shell 'echo new %%1 > %s'", fifo),
@@ -469,6 +491,7 @@ func (fc *FeedController) unbindKeys() {
 	UnbindKey("M-[")
 	UnbindKey("M-Enter")
 	UnbindKey("C-q")
+	UnbindKey("M-d")
 	UnbindKey("M-n")
 }
 

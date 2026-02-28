@@ -158,6 +158,11 @@ func KillSession(name string) {
 	exec.Command("tmux", "kill-session", "-t", name).Run()
 }
 
+// KillWindow destroys a single window in a session.
+func KillWindow(session, windowIndex string) error {
+	return exec.Command("tmux", "kill-window", "-t", session+":"+windowIndex).Run()
+}
+
 func ListWindows(session string) ([]WindowInfo, error) {
 	out, err := exec.Command("tmux", "list-windows", "-t", session,
 		"-F", "#{window_index}\t#{window_name}\t#{pane_current_path}",
