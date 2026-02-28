@@ -78,6 +78,7 @@ func (e *feedE2E) start() {
 		fifoPath:        e.fifo,
 		noAttach:        true,
 		refreshInterval: 200 * time.Millisecond, // fast refresh for tests
+		command:         "sleep 300",
 	}
 
 	go func() {
@@ -393,5 +394,33 @@ func TestE2E_NavigationAndHighlight(t *testing.T) {
 	t.Logf("After prev: %s", bar3)
 	if bar3 != bar {
 		t.Errorf("prev should return to original state, got: %s", bar3)
+	}
+}
+
+// TestE2E_NewSessionFocus verifies that M-n (new session) creates a window
+// and the cursor moves to it (bug fix: previously the screen stayed blank).
+func TestE2E_NewSessionFocus(t *testing.T) {
+	e := newFeedE2E(t, "new-focus")
+	e.start()
+	defer e.stop()
+
+	// Initial state: 2 windows
+	status := e.statusRight()
+	t.Logf("Initial: %s", status)
+	if !strings.Contains(status, "[1/2]") {
+		t.Fatalf("expected [1/2], got: %s", status)
+	}
+
+	// Create a new window via "new" command
+	e.send(fmt.Sprintf("new %s", e.cwd))
+
+	// After new session: should have 3 windows and cursor on the new one
+	status = e.statusRight()
+	t.Logf("After new: %s", status)
+	if !strings.Contains(status, "/3]") {
+		t.Errorf("expected 3 windows, got: %s", status)
+	}
+	if !strings.Contains(status, "[3/3]") {
+		t.Errorf("expected cursor on new window [3/3], got: %s", status)
 	}
 }

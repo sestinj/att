@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"strings"
 
+	"github.com/sestinj/att/internal/config"
 	"github.com/sestinj/att/internal/tmux"
 	"github.com/spf13/cobra"
 )
@@ -23,6 +24,16 @@ func init() {
 }
 
 func runStart(cmd *cobra.Command, args []string) error {
+	cfg := config.Load()
+
+	command := cfg.Command
+	if flagCommand != "" {
+		command = flagCommand
+	}
+	if command == "" {
+		command = "claude"
+	}
+
 	dir := ""
 	if len(args) > 0 {
 		dir = args[0]
@@ -36,22 +47,30 @@ func runStart(cmd *cobra.Command, args []string) error {
 		return err
 	}
 
-	// If inside a git repo, use the repo root
-	if gitRoot, err := exec.Command("git", "-C", absDir, "rev-parse", "--show-toplevel").Output(); err == nil {
-		absDir = strings.TrimSpace(string(gitRoot))
-	}
-
 	windowName := filepath.Base(absDir)
+
+	if cfg.DirCommand != "" {
+		newDir, err := config.RunDirCommand(cfg.DirCommand, absDir)
+		if err != nil {
+			return fmt.Errorf("dir_command failed: %w", err)
+		}
+		absDir = newDir
+	} else {
+		// If inside a git repo, use the repo root
+		if gitRoot, err := exec.Command("git", "-C", absDir, "rev-parse", "--show-toplevel").Output(); err == nil {
+			absDir = strings.TrimSpace(string(gitRoot))
+		}
+	}
 
 	var windowIdx string
 	if !tmux.HasSession("att") {
-		idx, err := tmux.NewSession("att", windowName, absDir, "claude")
+		idx, err := tmux.NewSession("att", windowName, absDir, command)
 		if err != nil {
 			return fmt.Errorf("create tmux session: %w", err)
 		}
 		windowIdx = idx
 	} else {
-		idx, err := tmux.NewWindow("att", windowName, absDir, "claude")
+		idx, err := tmux.NewWindow("att", windowName, absDir, command)
 		if err != nil {
 			return fmt.Errorf("create tmux window: %w", err)
 		}

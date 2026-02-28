@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/sestinj/att/internal/claude"
+	"github.com/sestinj/att/internal/config"
 )
 
 // staleWorkingThreshold is how long a Working session can go without JSONL
@@ -36,6 +37,9 @@ type FeedController struct {
 	noAttach           bool          // skip tmux attach/switch (for testing)
 	showAll            bool          // show all windows, not just attention queue
 	refreshInterval    time.Duration // override default 3s refresh (for testing)
+	command            string        // command to run in new windows (default: "claude")
+	projects           []string      // project directories for M-n menu
+	dirCommand         string        // command to transform directory before launch
 }
 
 func NewFeedController(opts ...FeedOption) *FeedController {
@@ -43,6 +47,7 @@ func NewFeedController(opts ...FeedOption) *FeedController {
 		dismissed:   make(map[string]bool),
 		baseSession: "att",
 		fifoPath:    fmt.Sprintf("/tmp/att-feed-%d.fifo", os.Getpid()),
+		command:     "claude",
 	}
 	for _, opt := range opts {
 		opt(fc)
@@ -62,6 +67,18 @@ func WithBaseSession(name string) FeedOption {
 
 func WithRefreshInterval(d time.Duration) FeedOption {
 	return func(fc *FeedController) { fc.refreshInterval = d }
+}
+
+func WithCommand(cmd string) FeedOption {
+	return func(fc *FeedController) { fc.command = cmd }
+}
+
+func WithProjects(projects []string) FeedOption {
+	return func(fc *FeedController) { fc.projects = projects }
+}
+
+func WithDirCommand(cmd string) FeedOption {
+	return func(fc *FeedController) { fc.dirCommand = cmd }
 }
 
 // cleanupStale removes att-feed-* tmux sessions and /tmp/att-feed-*.fifo
@@ -107,7 +124,8 @@ func (fc *FeedController) Run() error {
 
 	// Ensure base att tmux session exists
 	if !HasSession(fc.baseSession) {
-		if _, err := NewSession(fc.baseSession, "shell", "", ""); err != nil {
+		// Create with a blank placeholder (not a shell) — use M-n to start a real session
+		if _, err := NewSession(fc.baseSession, "att", "", "tail -f /dev/null"); err != nil {
 			return fmt.Errorf("create tmux session: %w", err)
 		}
 	}
@@ -505,11 +523,36 @@ func (fc *FeedController) newSession(dir string) {
 	if err != nil {
 		absDir = dir
 	}
-	if gitRoot, err := exec.Command("git", "-C", absDir, "rev-parse", "--show-toplevel").Output(); err == nil {
-		absDir = strings.TrimSpace(string(gitRoot))
+	windowName := filepath.Base(absDir)
+
+	if fc.dirCommand != "" {
+		newDir, err := config.RunDirCommand(fc.dirCommand, absDir)
+		if err != nil {
+			exec.Command("tmux", "display-message", fmt.Sprintf("dir_command failed: %v", err)).Run()
+			return
+		}
+		absDir = newDir
+	} else {
+		if gitRoot, err := exec.Command("git", "-C", absDir, "rev-parse", "--show-toplevel").Output(); err == nil {
+			absDir = strings.TrimSpace(string(gitRoot))
+		}
 	}
-	NewWindow(fc.baseSession, filepath.Base(absDir), absDir, "claude")
+
+	idx, err := NewWindow(fc.baseSession, windowName, absDir, fc.command)
+	if err != nil {
+		return
+	}
+
 	fc.refresh()
+
+	// Focus the newly created window
+	for i, w := range fc.allWindows {
+		if w.Index == idx {
+			fc.cursor = i
+			fc.focusCurrent()
+			break
+		}
+	}
 	fc.updateStatusBar()
 }
 
@@ -564,10 +607,29 @@ func (fc *FeedController) bindKeys() {
 	BindKey("C-q", fmt.Sprintf("echo quit > %s", fifo))
 	BindKey("M-a", fmt.Sprintf("echo toggleall > %s", fifo))
 	BindKey("M-d", fmt.Sprintf("echo kill > %s", fifo))
-	BindKeyDirect("M-n",
-		"command-prompt", "-I", "#{pane_current_path}", "-p", "New session:",
-		fmt.Sprintf("run-shell 'echo new %%1 > %s'", fifo),
-	)
+
+	if len(fc.projects) > 0 {
+		menuArgs := []string{"display-menu", "-T", "New session"}
+		for i, p := range fc.projects {
+			name := filepath.Base(p)
+			shortcut := ""
+			if i < 9 {
+				shortcut = strconv.Itoa(i + 1)
+			}
+			cmd := fmt.Sprintf("run-shell 'echo new %s > %s'", p, fifo)
+			menuArgs = append(menuArgs, name, shortcut, cmd)
+		}
+		// Separator then free-text fallback
+		menuArgs = append(menuArgs, "")
+		customCmd := fmt.Sprintf(`command-prompt -I #{pane_current_path} -p "New session:" "run-shell 'echo new %%1 > %s'"`, fifo)
+		menuArgs = append(menuArgs, "Custom...", "c", customCmd)
+		BindKeyDirect("M-n", menuArgs...)
+	} else {
+		BindKeyDirect("M-n",
+			"command-prompt", "-I", "#{pane_current_path}", "-p", "New session:",
+			fmt.Sprintf("run-shell 'echo new %%1 > %s'", fifo),
+		)
+	}
 }
 
 func (fc *FeedController) unbindKeys() {
