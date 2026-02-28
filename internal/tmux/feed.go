@@ -34,6 +34,7 @@ type FeedController struct {
 	baseSession        string        // base tmux session that owns the windows (e.g. "att")
 	sessionName        string        // grouped session for this feed instance
 	noAttach           bool          // skip tmux attach/switch (for testing)
+	showAll            bool          // show all windows, not just attention queue
 	refreshInterval    time.Duration // override default 3s refresh (for testing)
 }
 
@@ -207,6 +208,8 @@ func (fc *FeedController) Run() error {
 				return nil
 			case cmd == "kill":
 				fc.killCurrent()
+			case cmd == "toggleall":
+				fc.toggleShowAll()
 			case strings.HasPrefix(cmd, "new "):
 				dir := strings.TrimPrefix(cmd, "new ")
 				fc.newSession(dir)
@@ -362,21 +365,58 @@ func (fc *FeedController) focusCurrent() {
 }
 
 func (fc *FeedController) next() {
-	if len(fc.allWindows) == 0 {
-		return
+	if fc.showAll {
+		if len(fc.allWindows) == 0 {
+			return
+		}
+		fc.cursor = (fc.cursor + 1) % len(fc.allWindows)
+	} else {
+		if len(fc.attentionQueue) == 0 {
+			return
+		}
+		fc.cursor = fc.nextInQueue(1)
 	}
-	fc.cursor = (fc.cursor + 1) % len(fc.allWindows)
 	fc.focusCurrent()
 	fc.updateStatusBar()
 	fc.renderSessionLine()
 }
 
 func (fc *FeedController) prev() {
-	if len(fc.allWindows) == 0 {
-		return
+	if fc.showAll {
+		if len(fc.allWindows) == 0 {
+			return
+		}
+		fc.cursor = (fc.cursor - 1 + len(fc.allWindows)) % len(fc.allWindows)
+	} else {
+		if len(fc.attentionQueue) == 0 {
+			return
+		}
+		fc.cursor = fc.nextInQueue(-1)
 	}
-	fc.cursor = (fc.cursor - 1 + len(fc.allWindows)) % len(fc.allWindows)
 	fc.focusCurrent()
+	fc.updateStatusBar()
+	fc.renderSessionLine()
+}
+
+// nextInQueue finds the next (dir=1) or previous (dir=-1) window in the
+// attention queue relative to the current cursor position.
+func (fc *FeedController) nextInQueue(dir int) int {
+	curIdx := -1
+	for i, wi := range fc.attentionQueue {
+		if wi == fc.cursor {
+			curIdx = i
+			break
+		}
+	}
+	if curIdx == -1 {
+		return fc.attentionQueue[0]
+	}
+	n := len(fc.attentionQueue)
+	return fc.attentionQueue[(curIdx+dir+n)%n]
+}
+
+func (fc *FeedController) toggleShowAll() {
+	fc.showAll = !fc.showAll
 	fc.updateStatusBar()
 	fc.renderSessionLine()
 }
@@ -463,11 +503,14 @@ func (fc *FeedController) updateStatusBar() {
 	attn := len(fc.attentionQueue)
 
 	var status string
-	if attn == 0 {
-		status = fmt.Sprintf("att | %s [%d/%d] | All clear | M-Ret dismiss | ^Q quit",
+	if fc.showAll {
+		status = fmt.Sprintf("att | %s [%d/%d] | ALL | M-a filter | ^Q quit",
+			name, fc.cursor+1, len(fc.allWindows))
+	} else if attn == 0 {
+		status = fmt.Sprintf("att | %s [%d/%d] | All clear | M-a show all | ^Q quit",
 			name, fc.cursor+1, len(fc.allWindows))
 	} else {
-		status = fmt.Sprintf("att | %s [%d/%d] | %d need attention | M-Ret dismiss | ^Q quit",
+		status = fmt.Sprintf("att | %s [%d/%d] | %d need attention | M-a show all | ^Q quit",
 			name, fc.cursor+1, len(fc.allWindows), attn)
 	}
 	SetStatusRightForSession(fc.sessionName, status)
@@ -479,6 +522,7 @@ func (fc *FeedController) bindKeys() {
 	BindKey("M-[", fmt.Sprintf("echo prev > %s", fifo))
 	BindKey("M-Enter", fmt.Sprintf("echo dismiss > %s", fifo))
 	BindKey("C-q", fmt.Sprintf("echo quit > %s", fifo))
+	BindKey("M-a", fmt.Sprintf("echo toggleall > %s", fifo))
 	BindKey("M-d", fmt.Sprintf("echo kill > %s", fifo))
 	BindKeyDirect("M-n",
 		"command-prompt", "-I", "#{pane_current_path}", "-p", "New session:",
@@ -491,6 +535,7 @@ func (fc *FeedController) unbindKeys() {
 	UnbindKey("M-[")
 	UnbindKey("M-Enter")
 	UnbindKey("C-q")
+	UnbindKey("M-a")
 	UnbindKey("M-d")
 	UnbindKey("M-n")
 }
@@ -526,7 +571,18 @@ func (fc *FeedController) getClientWidth() int {
 }
 
 func (fc *FeedController) renderSessionLine() {
-	if len(fc.attentionQueue) == 0 {
+	if fc.showAll {
+		// Show every window with its session state
+		var sessions []claude.Session
+		for i := range fc.allWindows {
+			sessions = append(sessions, fc.stateByWindow[i])
+		}
+		line := formatSessionLine(fc.allWindows, sessions, fc.cursor, fc.getClientWidth())
+		SetStatusLeftForSession(fc.sessionName, line)
+		return
+	}
+
+	if len(fc.attentionQueue) == 0 && !fc.showAll {
 		msg := fmt.Sprintf("All clear \u2014 %d sessions working", len(fc.allWindows))
 		SetStatusLeftForSession(fc.sessionName, "#[align=centre]"+msg)
 		return
