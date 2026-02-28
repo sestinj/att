@@ -37,17 +37,17 @@ func Load() Config {
 	return cfg
 }
 
-// RunDirCommand executes a dir_command with dir appended as the last argument.
+// RunDirCommand executes a dir_command with the working directory set to dir.
 // The command string is split on whitespace (no shell). Returns the trimmed
 // stdout as the resolved directory path. Times out after 30 seconds.
 func RunDirCommand(dirCmd, dir string) (string, error) {
 	parts := strings.Fields(dirCmd)
-	parts = append(parts, dir)
 
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 
 	cmd := exec.CommandContext(ctx, parts[0], parts[1:]...)
+	cmd.Dir = dir
 	out, err := cmd.Output()
 	if err != nil {
 		return "", fmt.Errorf("dir_command %q: %w", dirCmd, err)
