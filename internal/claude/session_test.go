@@ -276,6 +276,42 @@ func TestClassifySessionState(t *testing.T) {
 			want: StateUnknown,
 		},
 
+		// === Sticky interactive state (streaming overwrite protection) ===
+		{
+			name: "asking: sticky through streaming overwrite",
+			lines: []string{
+				mainAssistant("", tool("AskUserQuestion")),
+				mainAssistant("", thinking()),
+			},
+			want: StateAsking,
+		},
+		{
+			name: "plan: sticky through streaming overwrite",
+			lines: []string{
+				mainAssistant("", tool("ExitPlanMode")),
+				mainAssistant("", text()),
+			},
+			want: StatePlanMode,
+		},
+		{
+			name: "asking: sticky cleared by user entry",
+			lines: []string{
+				mainAssistant("", tool("AskUserQuestion")),
+				mainAssistant("", thinking()),
+				userToolResult(),
+				mainAssistant("", text()),
+			},
+			want: StateWorking,
+		},
+		{
+			name: "asking: sticky cleared by non-working assistant state",
+			lines: []string{
+				mainAssistant("", tool("AskUserQuestion")),
+				mainAssistant("end_turn", text()),
+			},
+			want: StateIdle,
+		},
+
 		// === Sidechain filtering ===
 		{
 			name: "sidechain: skipped, main idle wins",

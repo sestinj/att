@@ -191,6 +191,12 @@ func ClassifySessionState(data []byte) SessionState {
 	// Guards against a race where stop_hook_summary arrives after the next
 	// user message due to async hook execution.
 	var userAfterAssistant bool
+	// Sticky interactive state: remembers the last Asking/PlanMode classification
+	// across consecutive assistant entries. During streaming, Claude may write
+	// multiple assistant entries (e.g. AskUserQuestion followed by a thinking
+	// block). Without stickiness, the later entry overwrites the state to Working.
+	// Only user entries clear the sticky state.
+	var stickyInteractive SessionState
 
 	for _, line := range bytes.Split(data, []byte{'\n'}) {
 		if len(line) == 0 {
@@ -211,13 +217,24 @@ func ClassifySessionState(data []byte) SessionState {
 			if entry.Message == nil {
 				continue
 			}
-			state = classifyAssistantMessage(entry.Message)
+			classified := classifyAssistantMessage(entry.Message)
+			if classified == StateAsking || classified == StatePlanMode {
+				stickyInteractive = classified
+			} else if classified != StateWorking || stickyInteractive == 0 {
+				stickyInteractive = 0
+			}
+			if stickyInteractive != 0 {
+				state = stickyInteractive
+			} else {
+				state = classified
+			}
 			userAfterAssistant = false
 
 		case "user":
 			if entry.Message != nil {
 				state = StateWorking
 				userAfterAssistant = true
+				stickyInteractive = 0
 			}
 
 		case "progress":

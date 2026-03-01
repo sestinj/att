@@ -89,7 +89,11 @@ func assignSessionsToWindows(windows []WindowInfo, sessions []claude.Session) ma
 	}
 	for path := range byPath {
 		group := byPath[path]
-		sort.Slice(group, func(i, j int) bool {
+		sort.SliceStable(group, func(i, j int) bool {
+			ai, aj := group[i].NeedsAttention(), group[j].NeedsAttention()
+			if ai != aj {
+				return ai
+			}
 			return group[i].ModTime.After(group[j].ModTime)
 		})
 		// Keep only as many sessions as there are windows at this path.

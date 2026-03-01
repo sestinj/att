@@ -189,13 +189,13 @@ func TestAssignSessionsToWindows(t *testing.T) {
 	t.Run("most recent session assigned first", func(t *testing.T) {
 		windows := makeWindows([]string{"proj"}, []string{"/proj"})
 		sessions := []claude.Session{
-			{WorkspacePath: "/proj", State: claude.StateIdle, ModTime: now.Add(-1 * time.Hour)},
-			{WorkspacePath: "/proj", State: claude.StateWorking, ModTime: now},
+			{WorkspacePath: "/proj", State: claude.StateWorking, ModTime: now.Add(-1 * time.Hour), SessionFile: "old.jsonl"},
+			{WorkspacePath: "/proj", State: claude.StateWorking, ModTime: now, SessionFile: "new.jsonl"},
 		}
 		result := assignSessionsToWindows(windows, sessions)
 		s := result[0]
-		if s.State != claude.StateWorking {
-			t.Errorf("expected most recent session (Working), got %v", s.State)
+		if s.SessionFile != "new.jsonl" {
+			t.Errorf("expected most recent session (new.jsonl), got %s", s.SessionFile)
 		}
 	})
 
@@ -223,15 +223,15 @@ func TestAssignSessionsToWindows(t *testing.T) {
 	t.Run("old sessions excluded when more sessions than windows", func(t *testing.T) {
 		windows := makeWindows([]string{"proj"}, []string{"/proj"})
 		sessions := []claude.Session{
-			{WorkspacePath: "/proj", State: claude.StateWorking, ModTime: now},
-			{WorkspacePath: "/proj", State: claude.StateIdle, ModTime: now.Add(-5 * time.Hour)},
-			{WorkspacePath: "/proj", State: claude.StateIdle, ModTime: now.Add(-6 * time.Hour)},
+			{WorkspacePath: "/proj", State: claude.StateWorking, ModTime: now, SessionFile: "recent.jsonl"},
+			{WorkspacePath: "/proj", State: claude.StateWorking, ModTime: now.Add(-5 * time.Hour), SessionFile: "old1.jsonl"},
+			{WorkspacePath: "/proj", State: claude.StateWorking, ModTime: now.Add(-6 * time.Hour), SessionFile: "old2.jsonl"},
 		}
 		result := assignSessionsToWindows(windows, sessions)
 		// Only 1 window, so only the most recent session should be used
 		s := result[0]
-		if s.State != claude.StateWorking {
-			t.Errorf("expected most recent session (Working), got %v (stale session leaked)", s.State)
+		if s.SessionFile != "recent.jsonl" {
+			t.Errorf("expected most recent session (recent.jsonl), got %s (stale session leaked)", s.SessionFile)
 		}
 	})
 
@@ -240,19 +240,32 @@ func TestAssignSessionsToWindows(t *testing.T) {
 		sessions := []claude.Session{
 			{WorkspacePath: "/proj", State: claude.StateAsking, ModTime: now},
 			{WorkspacePath: "/proj", State: claude.StateWorking, ModTime: now.Add(-5 * time.Minute)},
-			{WorkspacePath: "/proj", State: claude.StateIdle, ModTime: now.Add(-3 * time.Hour)},
-			{WorkspacePath: "/proj", State: claude.StateIdle, ModTime: now.Add(-4 * time.Hour)},
-			{WorkspacePath: "/proj", State: claude.StateIdle, ModTime: now.Add(-5 * time.Hour)},
+			{WorkspacePath: "/proj", State: claude.StateWorking, ModTime: now.Add(-3 * time.Hour)},
+			{WorkspacePath: "/proj", State: claude.StateWorking, ModTime: now.Add(-4 * time.Hour)},
+			{WorkspacePath: "/proj", State: claude.StateWorking, ModTime: now.Add(-5 * time.Hour)},
 		}
 		result := assignSessionsToWindows(windows, sessions)
-		// 2 windows -> only the 2 most recent sessions should be assigned
+		// 2 windows -> Asking (attention) + most recent Working survive
 		s0 := result[0]
 		s1 := result[1]
 		if s0.State != claude.StateAsking {
-			t.Errorf("expected first window = Asking (most recent), got %v", s0.State)
+			t.Errorf("expected first window = Asking (attention priority), got %v", s0.State)
 		}
 		if s1.State != claude.StateWorking {
-			t.Errorf("expected second window = Working (second most recent), got %v", s1.State)
+			t.Errorf("expected second window = Working (most recent non-attention), got %v", s1.State)
+		}
+	})
+
+	t.Run("attention-needing session preferred over newer non-attention", func(t *testing.T) {
+		windows := makeWindows([]string{"proj"}, []string{"/proj"})
+		sessions := []claude.Session{
+			{WorkspacePath: "/proj", State: claude.StateAsking, ModTime: now.Add(-1 * time.Hour)},
+			{WorkspacePath: "/proj", State: claude.StateWorking, ModTime: now},
+		}
+		result := assignSessionsToWindows(windows, sessions)
+		s := result[0]
+		if s.State != claude.StateAsking {
+			t.Errorf("expected attention-needing session (Asking) to win over newer Working, got %v", s.State)
 		}
 	})
 
@@ -284,14 +297,14 @@ func TestDismissAndAdvance(t *testing.T) {
 			3: {SessionFile: "session-d.jsonl", State: claude.StateIdle},
 		},
 		attentionQueue: []int{0, 2, 3}, // alpha, gamma, delta need attention
-		cursor:         0,              // on alpha
+		cursor:         "0",            // on alpha
 		dismissed:      make(map[string]bool),
 	}
 
 	// Dismiss from alpha -> should advance to gamma (next in queue)
 	fc.dismissAndAdvance()
-	if fc.cursor != 2 {
-		t.Errorf("expected cursor=2 (gamma), got cursor=%d", fc.cursor)
+	if fc.cursor != "2" {
+		t.Errorf("expected cursor=\"2\" (gamma), got cursor=%s", fc.cursor)
 	}
 	if !fc.dismissed["session-a.jsonl"] {
 		t.Errorf("expected session-a.jsonl to be in dismissed set")
@@ -302,8 +315,8 @@ func TestDismissAndAdvance(t *testing.T) {
 
 	// Dismiss from gamma -> should advance to delta
 	fc.dismissAndAdvance()
-	if fc.cursor != 3 {
-		t.Errorf("expected cursor=3 (delta), got cursor=%d", fc.cursor)
+	if fc.cursor != "3" {
+		t.Errorf("expected cursor=\"3\" (delta), got cursor=%s", fc.cursor)
 	}
 	if !fc.dismissed["session-c.jsonl"] {
 		t.Errorf("expected session-c.jsonl to be in dismissed set")
@@ -332,7 +345,7 @@ func TestDismissAndAdvance_SingleItem(t *testing.T) {
 			1: {SessionFile: "session-b.jsonl", State: claude.StateIdle},
 		},
 		attentionQueue: []int{1}, // only beta needs attention
-		cursor:         1,
+		cursor:         "1",
 		dismissed:      make(map[string]bool),
 	}
 
@@ -358,14 +371,14 @@ func TestDismissAndAdvance_CursorNotInQueue(t *testing.T) {
 			2: {SessionFile: "session-c.jsonl", State: claude.StateAsking},
 		},
 		attentionQueue: []int{1, 2}, // beta, gamma
-		cursor:         0,           // on alpha (not in queue)
+		cursor:         "0",         // on alpha (not in queue)
 		dismissed:      make(map[string]bool),
 	}
 
 	// Cursor not in queue: dismisses current window, advances to first queue item
 	fc.dismissAndAdvance()
-	if fc.cursor != 1 {
-		t.Errorf("expected cursor=1 (first in queue), got cursor=%d", fc.cursor)
+	if fc.cursor != "1" {
+		t.Errorf("expected cursor=\"1\" (first in queue), got cursor=%s", fc.cursor)
 	}
 	if !fc.dismissed["session-a.jsonl"] {
 		t.Errorf("expected session-a.jsonl to be in dismissed set")
@@ -389,7 +402,7 @@ func TestDismissedClearedOnStateChange(t *testing.T) {
 			2: {WorkspacePath: "/c", SessionFile: "session-c.jsonl", State: claude.StateIdle, ModTime: now},
 		},
 		attentionQueue: []int{0, 1, 2},
-		cursor:         0,
+		cursor:         "0",
 		dismissed:      map[string]bool{"session-a.jsonl": true, "session-b.jsonl": true},
 	}
 
@@ -562,15 +575,15 @@ func TestSnoozeAndAdvance(t *testing.T) {
 			2: {SessionFile: "session-c.jsonl", State: claude.StateAsking},
 		},
 		attentionQueue: []int{0, 1, 2},
-		cursor:         0,
+		cursor:         "0",
 		dismissed:      make(map[string]bool),
 		snooze:         snooze,
 	}
 
 	// Snooze alpha -> should advance to beta
 	fc.snoozeAndAdvance("1h")
-	if fc.cursor != 1 {
-		t.Errorf("expected cursor=1 (beta), got cursor=%d", fc.cursor)
+	if fc.cursor != "1" {
+		t.Errorf("expected cursor=\"1\" (beta), got cursor=%s", fc.cursor)
 	}
 	if !snooze.IsSnoozed("session-a.jsonl") {
 		t.Errorf("expected session-a.jsonl to be snoozed")
@@ -640,12 +653,12 @@ func TestKillCurrent_IndexShift(t *testing.T) {
 			2: {SessionFile: "session-c.jsonl", State: claude.StateAsking},
 			3: {SessionFile: "session-d.jsonl", State: claude.StateWorking},
 		},
-		cursor:    1, // killing beta
+		cursor:    "1", // killing beta
 		dismissed: make(map[string]bool),
 	}
 
 	// Perform the same in-memory splice as killCurrent
-	killedIdx := fc.cursor
+	killedIdx := fc.cursorPos()
 	fc.allWindows = append(fc.allWindows[:killedIdx], fc.allWindows[killedIdx+1:]...)
 
 	newState := make(map[int]claude.Session, len(fc.stateByWindow))
@@ -695,11 +708,11 @@ func TestKillCurrent_KillFirst(t *testing.T) {
 			1: {SessionFile: "session-b.jsonl", State: claude.StateWorking},
 			2: {SessionFile: "session-c.jsonl", State: claude.StateAsking},
 		},
-		cursor:    0, // killing alpha
+		cursor:    "0", // killing alpha
 		dismissed: make(map[string]bool),
 	}
 
-	killedIdx := fc.cursor
+	killedIdx := fc.cursorPos()
 	fc.allWindows = append(fc.allWindows[:killedIdx], fc.allWindows[killedIdx+1:]...)
 
 	newState := make(map[int]claude.Session, len(fc.stateByWindow))
@@ -736,11 +749,11 @@ func TestKillCurrent_KillLast(t *testing.T) {
 			0: {SessionFile: "session-a.jsonl", State: claude.StateWorking},
 			1: {SessionFile: "session-b.jsonl", State: claude.StateIdle},
 		},
-		cursor:    1, // killing last (beta)
+		cursor:    "1", // killing last (beta)
 		dismissed: make(map[string]bool),
 	}
 
-	killedIdx := fc.cursor
+	killedIdx := fc.cursorPos()
 	fc.allWindows = append(fc.allWindows[:killedIdx], fc.allWindows[killedIdx+1:]...)
 
 	newState := make(map[int]claude.Session, len(fc.stateByWindow))
