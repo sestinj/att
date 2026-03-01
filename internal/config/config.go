@@ -37,6 +37,20 @@ func Load() Config {
 	return cfg
 }
 
+// ResolveDir resolves a working directory for launching a session. If dirCommand
+// is set, it runs the command to transform the directory; otherwise it falls back
+// to the git repository root (if inside one). Returns absDir unchanged if neither
+// applies.
+func ResolveDir(dirCommand, absDir string) (string, error) {
+	if dirCommand != "" {
+		return RunDirCommand(dirCommand, absDir)
+	}
+	if gitRoot, err := exec.Command("git", "-C", absDir, "rev-parse", "--show-toplevel").Output(); err == nil {
+		return strings.TrimSpace(string(gitRoot)), nil
+	}
+	return absDir, nil
+}
+
 // RunDirCommand executes a dir_command with the working directory set to dir.
 // The command string is split on whitespace (no shell). Returns the trimmed
 // stdout as the resolved directory path. Times out after 30 seconds.

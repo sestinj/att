@@ -3,9 +3,7 @@ package cmd
 import (
 	"fmt"
 	"os"
-	"os/exec"
 	"path/filepath"
-	"strings"
 
 	"github.com/sestinj/att/internal/config"
 	"github.com/sestinj/att/internal/tmux"
@@ -49,18 +47,11 @@ func runStart(cmd *cobra.Command, args []string) error {
 
 	windowName := filepath.Base(absDir)
 
-	if cfg.DirCommand != "" {
-		newDir, err := config.RunDirCommand(cfg.DirCommand, absDir)
-		if err != nil {
-			return fmt.Errorf("dir_command failed: %w", err)
-		}
-		absDir = newDir
-	} else {
-		// If inside a git repo, use the repo root
-		if gitRoot, err := exec.Command("git", "-C", absDir, "rev-parse", "--show-toplevel").Output(); err == nil {
-			absDir = strings.TrimSpace(string(gitRoot))
-		}
+	resolved, err := config.ResolveDir(cfg.DirCommand, absDir)
+	if err != nil {
+		return fmt.Errorf("dir_command failed: %w", err)
 	}
+	absDir = resolved
 
 	var windowIdx string
 	if !tmux.HasSession("att") {

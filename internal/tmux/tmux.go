@@ -8,63 +8,8 @@ import (
 	"strings"
 )
 
-type PaneInfo struct {
-	PaneID      string
-	SessionName string
-	WindowIndex string
-	PanePath    string
-}
-
 func InTmux() bool {
 	return os.Getenv("TMUX") != ""
-}
-
-func ListPanes() ([]PaneInfo, error) {
-	out, err := exec.Command("tmux", "list-panes", "-a",
-		"-F", "#{pane_id}\t#{session_name}\t#{window_index}\t#{pane_current_path}",
-	).Output()
-	if err != nil {
-		return nil, err
-	}
-
-	var panes []PaneInfo
-	for _, line := range strings.Split(strings.TrimSpace(string(out)), "\n") {
-		if line == "" {
-			continue
-		}
-		parts := strings.SplitN(line, "\t", 4)
-		if len(parts) < 4 {
-			continue
-		}
-		panes = append(panes, PaneInfo{
-			PaneID:      parts[0],
-			SessionName: parts[1],
-			WindowIndex: parts[2],
-			PanePath:    parts[3],
-		})
-	}
-	return panes, nil
-}
-
-func FocusPane(p PaneInfo) error {
-	// Select the window first, then the pane
-	target := p.SessionName + ":" + p.WindowIndex
-	if err := exec.Command("tmux", "select-window", "-t", target).Run(); err != nil {
-		return err
-	}
-	return exec.Command("tmux", "select-pane", "-t", p.PaneID).Run()
-}
-
-func GetStatusRight() (string, error) {
-	out, err := exec.Command("tmux", "display-message", "-p", "#{status-right}").Output()
-	if err != nil {
-		return "", err
-	}
-	return strings.TrimSpace(string(out)), nil
-}
-
-func SetStatusRight(content string) error {
-	return exec.Command("tmux", "set-option", "status-right", content).Run()
 }
 
 func BindKey(key string, command string) error {

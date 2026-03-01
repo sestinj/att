@@ -424,3 +424,126 @@ func TestE2E_NewSessionFocus(t *testing.T) {
 		t.Errorf("expected cursor on new window [3/3], got: %s", status)
 	}
 }
+
+// TestE2E_PlaceholderCleanup verifies that the _init placeholder window
+// is cleaned up once a real window is created via "new".
+func TestE2E_PlaceholderCleanup(t *testing.T) {
+	requireTmux(t)
+
+	base := "att-e2e-placeholder"
+	cleanupSession(t, base)
+	t.Cleanup(func() { cleanupSession(t, base) })
+
+	cwd, _ := filepath.EvalSymlinks(t.TempDir())
+	home := t.TempDir()
+	projDir := filepath.Join(home, ".claude", "projects", "e2e-placeholder")
+	if err := os.MkdirAll(projDir, 0755); err != nil {
+		t.Fatal(err)
+	}
+
+	// Create base session with _init placeholder (mimics Run() bootstrap)
+	_, err := NewSession(base, "_init", cwd, "tail -f /dev/null")
+	if err != nil {
+		t.Fatalf("NewSession: %v", err)
+	}
+
+	// Verify placeholder exists
+	windows, err := ListWindows(base)
+	if err != nil {
+		t.Fatalf("ListWindows: %v", err)
+	}
+	if len(windows) != 1 || windows[0].Name != "_init" {
+		t.Fatalf("expected 1 _init window, got: %v", windows)
+	}
+
+	origHome := os.Getenv("HOME")
+	os.Setenv("HOME", home)
+	t.Cleanup(func() { os.Setenv("HOME", origHome) })
+
+	feed := base + "-feed"
+	fifo := fmt.Sprintf("/tmp/%s.fifo", feed)
+	t.Cleanup(func() { cleanupSession(t, feed) })
+
+	e := &feedE2E{
+		t:       t,
+		base:    base,
+		feed:    feed,
+		fifo:    fifo,
+		projDir: projDir,
+		cwd:     cwd,
+		done:    make(chan error, 1),
+	}
+
+	fc := &FeedController{
+		dismissed:       make(map[string]bool),
+		baseSession:     base,
+		sessionName:     feed,
+		fifoPath:        fifo,
+		noAttach:        true,
+		refreshInterval: 200 * time.Millisecond,
+		command:         "sleep 300",
+	}
+
+	go func() {
+		e.done <- fc.Run()
+	}()
+
+	// Wait for feed to start
+	deadline := time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) {
+		if _, err := os.Stat(fifo); err == nil {
+			break
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+	if _, err := os.Stat(fifo); err != nil {
+		t.Fatal("feed did not start within 5 seconds")
+	}
+	// Wait for initial refresh
+	for time.Now().Before(deadline) {
+		if bar := e.statusRight(); bar != "" {
+			break
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+
+	// With only the placeholder, it should still exist (only 1 window)
+	status := e.statusRight()
+	t.Logf("Before new: %s", status)
+	if !strings.Contains(status, "[1/1]") {
+		t.Fatalf("expected [1/1] with placeholder, got: %s", status)
+	}
+
+	// Create a real window
+	e.send(fmt.Sprintf("new %s", cwd))
+	e.waitRefresh()
+
+	// After creating a real window, placeholder should be cleaned up
+	// leaving only the real window (1 window, not 2)
+	status = e.statusRight()
+	t.Logf("After new + refresh: %s", status)
+
+	windows, err = ListWindows(base)
+	if err != nil {
+		t.Fatalf("ListWindows: %v", err)
+	}
+	for _, w := range windows {
+		if w.Name == "_init" {
+			t.Errorf("_init placeholder should have been cleaned up, windows: %v", windows)
+		}
+	}
+	if len(windows) != 1 {
+		t.Errorf("expected 1 window after cleanup, got %d: %v", len(windows), windows)
+	}
+
+	// Stop feed
+	e.send("quit")
+	select {
+	case err := <-e.done:
+		if err != nil {
+			t.Errorf("Run() returned error: %v", err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Error("Run() did not stop within 5 seconds")
+	}
+}
