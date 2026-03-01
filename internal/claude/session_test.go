@@ -103,11 +103,11 @@ func TestClassifySessionState(t *testing.T) {
 			want: StateIdle,
 		},
 		{
-			name: "idle: old version null stop_reason with text",
+			name: "working: null stop_reason streaming partial with text",
 			lines: []string{
 				mainAssistant("", text()),
 			},
-			want: StateIdle,
+			want: StateWorking,
 		},
 		{
 			name: "idle: end_turn followed by system entries",
@@ -199,11 +199,11 @@ func TestClassifySessionState(t *testing.T) {
 			want: StateAsking,
 		},
 		{
-			name: "asking: AskUserQuestion with null stop_reason (old version)",
+			name: "working: AskUserQuestion with null stop_reason (streaming partial)",
 			lines: []string{
 				mainAssistant("", tool("AskUserQuestion")),
 			},
-			want: StateAsking,
+			want: StateWorking,
 		},
 		{
 			name: "asking: AskUserQuestion after text",
@@ -223,11 +223,11 @@ func TestClassifySessionState(t *testing.T) {
 			want: StatePlanMode,
 		},
 		{
-			name: "plan: ExitPlanMode with null stop_reason",
+			name: "working: ExitPlanMode with null stop_reason (streaming partial)",
 			lines: []string{
 				mainAssistant("", tool("ExitPlanMode")),
 			},
-			want: StatePlanMode,
+			want: StateWorking,
 		},
 
 		// === StateToolPermission ===
@@ -247,11 +247,11 @@ func TestClassifySessionState(t *testing.T) {
 			want: StateToolPermission,
 		},
 		{
-			name: "permission: old version tool_use null stop_reason, no progress",
+			name: "working: tool_use null stop_reason streaming partial",
 			lines: []string{
 				mainAssistant("", tool("Write")),
 			},
-			want: StateToolPermission,
+			want: StateWorking,
 		},
 
 		// === StateUnknown ===

@@ -7,6 +7,7 @@ import (
 	"os/exec"
 	"os/signal"
 	"path/filepath"
+	"sort"
 	"strconv"
 	"strings"
 	"syscall"
@@ -16,12 +17,6 @@ import (
 	"github.com/sestinj/att/internal/config"
 )
 
-// staleWorkingThreshold is how long a Working session can go without JSONL
-// writes before we assume it's blocked on a tool permission prompt. Active
-// Claude work writes progress entries every few seconds; silence means the
-// process is waiting for user input (permission approval).
-const staleWorkingThreshold = 10 * time.Second
-
 type FeedController struct {
 	allWindows         []WindowInfo
 	discoveredSessions []claude.Session
@@ -30,6 +25,7 @@ type FeedController struct {
 	attentionQueue     []int                  // indices into allWindows for windows needing attention
 	dismissed          map[string]bool        // session file paths dismissed by user, hidden until state changes
 	snooze             *SnoozeStore           // time-based snooze for sessions
+	priority           *PriorityStore         // P0-P4 priority levels for sessions
 	fifoPath           string
 	origStatusRight    string
 	origStatusLeft     string
@@ -90,6 +86,12 @@ func (fc *FeedController) Run() error {
 	if fc.snooze == nil {
 		home, _ := os.UserHomeDir()
 		fc.snooze = LoadSnooze(filepath.Join(home, ".config", "att", "snooze.json"))
+	}
+
+	// Initialize priority store
+	if fc.priority == nil {
+		home, _ := os.UserHomeDir()
+		fc.priority = LoadPriority(filepath.Join(home, ".config", "att", "priority.json"))
 	}
 
 	// Ensure base att tmux session exists
@@ -237,6 +239,8 @@ func (fc *FeedController) Run() error {
 				fc.killCurrent()
 			case cmd == "toggleall":
 				fc.toggleShowAll()
+			case strings.HasPrefix(cmd, "priority "):
+				fc.setPriority(strings.TrimPrefix(cmd, "priority "))
 			case strings.HasPrefix(cmd, "snooze "):
 				fc.snoozeAndAdvance(strings.TrimPrefix(cmd, "snooze "))
 			case strings.HasPrefix(cmd, "new "):
@@ -252,7 +256,6 @@ func (fc *FeedController) Run() error {
 
 		case <-fastTicker.C:
 			if fc.refreshAssigned() {
-				fc.applyStaleDetection()
 				fc.updateDisplay()
 				fc.updateStatusBar()
 			}
@@ -277,7 +280,6 @@ func (fc *FeedController) refresh() {
 	// Assign sessions to windows (filters out stale sessions)
 	fc.stateByWindow = assignSessionsToWindows(windows, sessions)
 
-	fc.applyStaleDetection()
 	fc.updateDisplay()
 }
 
@@ -294,7 +296,6 @@ func (fc *FeedController) refreshWindows() {
 	windows = fc.cleanupPlaceholder(windows)
 	fc.allWindows = windows
 	fc.stateByWindow = assignSessionsToWindows(windows, fc.discoveredSessions)
-	fc.applyStaleDetection()
 	fc.updateDisplay()
 }
 
@@ -319,18 +320,6 @@ func (fc *FeedController) refreshAssigned() bool {
 		changed = true
 	}
 	return changed
-}
-
-// applyStaleDetection upgrades Working sessions with no recent JSONL writes
-// to ToolPermission, since active Claude work writes progress entries every
-// few seconds and silence means the process is waiting for user approval.
-func (fc *FeedController) applyStaleDetection() {
-	for i, s := range fc.stateByWindow {
-		if s.State == claude.StateWorking && time.Since(s.ModTime) > staleWorkingThreshold {
-			s.State = claude.StateToolPermission
-			fc.stateByWindow[i] = s
-		}
-	}
 }
 
 // updateDisplay rebuilds the attention queue, clears stale dismissals,
@@ -381,6 +370,16 @@ func (fc *FeedController) updateDisplay() {
 		} else if hasAsterisk {
 			RenameWindow(fc.baseSession, w.Index, strings.TrimSuffix(w.Name, "*"))
 		}
+	}
+
+	// Sort attention queue by priority (lower number = higher priority).
+	// SliceStable preserves window-index order within the same priority level.
+	if fc.priority != nil {
+		sort.SliceStable(fc.attentionQueue, func(i, j int) bool {
+			si := fc.stateByWindow[fc.attentionQueue[i]]
+			sj := fc.stateByWindow[fc.attentionQueue[j]]
+			return fc.priority.Get(si.SessionFile) < fc.priority.Get(sj.SessionFile)
+		})
 	}
 
 	// Clamp cursor
@@ -503,6 +502,23 @@ func (fc *FeedController) snoozeAndAdvance(durStr string) {
 	fc.removeFromQueueAndAdvance()
 }
 
+func (fc *FeedController) setPriority(levelStr string) {
+	if fc.priority == nil {
+		return
+	}
+	level, err := strconv.Atoi(strings.TrimSpace(levelStr))
+	if err != nil || level < 0 || level > 4 {
+		return
+	}
+	s, ok := fc.stateByWindow[fc.cursor]
+	if !ok || s.SessionFile == "" {
+		return
+	}
+	fc.priority.Set(s.SessionFile, level)
+	fc.updateDisplay()
+	fc.updateStatusBar()
+}
+
 // removeFromQueueAndAdvance removes the current cursor position from the
 // attention queue and advances to the next item. Used by dismiss and snooze.
 func (fc *FeedController) removeFromQueueAndAdvance() {
@@ -570,11 +586,14 @@ func (fc *FeedController) killCurrent() {
 	}
 	w := fc.allWindows[fc.cursor]
 
-	// Clear any dismissed/snoozed state for this window's session
+	// Clear any dismissed/snoozed/priority state for this window's session
 	if s, ok := fc.stateByWindow[fc.cursor]; ok && s.SessionFile != "" {
 		delete(fc.dismissed, s.SessionFile)
 		if fc.snooze != nil {
 			fc.snooze.Unsnooze(s.SessionFile)
+		}
+		if fc.priority != nil {
+			fc.priority.Remove(s.SessionFile)
 		}
 	}
 
@@ -600,7 +619,6 @@ func (fc *FeedController) killCurrent() {
 	}
 	fc.stateByWindow = newState
 
-	fc.applyStaleDetection()
 	fc.updateDisplay()
 	fc.updateStatusBar()
 }
@@ -614,6 +632,13 @@ func (fc *FeedController) updateStatusBar() {
 	w := fc.allWindows[fc.cursor]
 	name := strings.TrimSuffix(w.Name, "*")
 	attn := len(fc.attentionQueue)
+
+	// Prepend priority indicator when non-default
+	if s, ok := fc.stateByWindow[fc.cursor]; ok && fc.priority != nil {
+		if p := fc.priority.Get(s.SessionFile); p < DefaultPriority {
+			name = fmt.Sprintf("P%d %s", p, name)
+		}
+	}
 
 	var status string
 	if fc.showAll {
@@ -661,6 +686,19 @@ func (fc *FeedController) bindKeys() {
 		log.Printf("att: bind M-z failed: %v", err)
 	}
 
+	priorityCmd := func(level string) string {
+		return fmt.Sprintf("run-shell '%s && echo priority %s > %s || true'", guard, level, fifoTemplate)
+	}
+	if err := BindKeyDirect("M-p", "display-menu", "-T", "Priority",
+		"P0 - Critical", "0", priorityCmd("0"),
+		"P1 - High", "1", priorityCmd("1"),
+		"P2 - Medium", "2", priorityCmd("2"),
+		"P3 - Low", "3", priorityCmd("3"),
+		"P4 - Default", "4", priorityCmd("4"),
+	); err != nil {
+		log.Printf("att: bind M-p failed: %v", err)
+	}
+
 	newCmd := fmt.Sprintf("run-shell '%s && echo new %%%%1 > %s || true'", guard, fifoTemplate)
 	if len(fc.projects) > 0 {
 		menuArgs := []string{"display-menu", "-T", "New session"}
@@ -698,7 +736,7 @@ func (fc *FeedController) unbindKeys() {
 			return // other feed still running, keep bindings
 		}
 	}
-	for _, key := range []string{"M-]", "M-[", "M-Enter", "C-q", "M-a", "M-d", "M-z", "M-n"} {
+	for _, key := range []string{"M-]", "M-[", "M-Enter", "C-q", "M-a", "M-d", "M-z", "M-p", "M-n"} {
 		UnbindKey(key)
 	}
 }

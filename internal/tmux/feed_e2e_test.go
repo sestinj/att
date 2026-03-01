@@ -312,45 +312,6 @@ func TestE2E_DismissReappearsAfterWorking(t *testing.T) {
 	}
 }
 
-// TestE2E_StaleWorkingShowsPerm verifies that a session stuck in Working
-// (no JSONL writes for >10s) is detected as ToolPermission.
-func TestE2E_StaleWorkingShowsPerm(t *testing.T) {
-	e := newFeedE2E(t, "stale-perm")
-
-	// One session with stale Working state (old modtime)
-	e.writeSession("s1",
-		e.metadata(),
-		jsonlUser("do this task"),
-	)
-	e.touchSession("s1", time.Now().Add(-staleWorkingThreshold-2*time.Second))
-
-	// One session that's actively Working (recent modtime)
-	e.writeSession("s2",
-		e.metadata(),
-		jsonlUser("do that task"),
-	)
-
-	e.start()
-	defer e.stop()
-
-	bar := e.sessionBar()
-	status := e.statusRight()
-	t.Logf("Session bar: %s", bar)
-	t.Logf("Status right: %s", status)
-
-	// Stale session should show as Perm* (needs attention)
-	if !strings.Contains(bar, "Perm*") {
-		t.Errorf("expected stale Working to show as Perm*, got: %s", bar)
-	}
-
-	// Active session should NOT be in the attention bar
-	// (it's Working with recent modtime -> no attention needed)
-	permCount := strings.Count(bar, "Perm*")
-	if permCount != 1 {
-		t.Errorf("expected exactly 1 Perm*, got %d: %s", permCount, bar)
-	}
-}
-
 // TestE2E_NavigationAndHighlight verifies M-] and M-[ move the cursor
 // and the highlight follows.
 func TestE2E_NavigationAndHighlight(t *testing.T) {

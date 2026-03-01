@@ -259,26 +259,8 @@ func classifyAssistantMessage(msg *messageEnvelope) SessionState {
 		return classifyToolUse(msg.Content)
 
 	case "":
-		// Null stop_reason: streaming partial or old-version final entry.
-		// Inspect content blocks to determine state.
-		hasToolUse := false
-		hasText := false
-		for _, block := range msg.Content {
-			switch block.Type {
-			case "tool_use":
-				hasToolUse = true
-			case "text":
-				hasText = true
-			}
-		}
-		if hasToolUse {
-			return classifyToolUse(msg.Content)
-		}
-		if hasText {
-			// Text-only with null stop_reason = end of turn on old versions
-			return StateIdle
-		}
-		// Thinking block or empty content = response in progress
+		// Null stop_reason = streaming partial. The final state isn't known
+		// until stop_reason is set, so treat as Working.
 		return StateWorking
 
 	default:

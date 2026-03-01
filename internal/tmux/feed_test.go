@@ -46,7 +46,7 @@ func TestFormatSessionLine_HighlightFollowsCursor(t *testing.T) {
 	)
 
 	// Cursor on alpha (index 0)
-	line := formatSessionLine(windows, sessions, 0, 200)
+	line := formatSessionLine(windows, sessions, 0, 200, nil)
 	if !strings.Contains(line, "#[reverse]alpha Work#[noreverse]") {
 		t.Errorf("cursor=0: expected alpha highlighted, got: %s", line)
 	}
@@ -55,7 +55,7 @@ func TestFormatSessionLine_HighlightFollowsCursor(t *testing.T) {
 	}
 
 	// Cursor on beta (index 1)
-	line = formatSessionLine(windows, sessions, 1, 200)
+	line = formatSessionLine(windows, sessions, 1, 200, nil)
 	if !strings.Contains(line, "#[reverse]beta Idle*#[noreverse]") {
 		t.Errorf("cursor=1: expected beta highlighted, got: %s", line)
 	}
@@ -64,7 +64,7 @@ func TestFormatSessionLine_HighlightFollowsCursor(t *testing.T) {
 	}
 
 	// Cursor on gamma (index 2)
-	line = formatSessionLine(windows, sessions, 2, 200)
+	line = formatSessionLine(windows, sessions, 2, 200, nil)
 	if !strings.Contains(line, "#[reverse]gamma Ask*#[noreverse]") {
 		t.Errorf("cursor=2: expected gamma highlighted, got: %s", line)
 	}
@@ -80,7 +80,7 @@ func TestFormatSessionLine_NoArrowsWhenFits(t *testing.T) {
 		[]claude.SessionState{claude.StateWorking, claude.StateIdle},
 	)
 
-	line := formatSessionLine(windows, sessions, 0, 200)
+	line := formatSessionLine(windows, sessions, 0, 200, nil)
 	if strings.Contains(line, "\u25c0") || strings.Contains(line, "\u25b6") {
 		t.Errorf("should not have arrows when everything fits, got: %s", line)
 	}
@@ -98,7 +98,7 @@ func TestFormatSessionLine_Overflow_ShowsArrows(t *testing.T) {
 	sessions := makeSessions(paths, states)
 
 	// Active in the middle
-	line := formatSessionLine(windows, sessions, 3, 80)
+	line := formatSessionLine(windows, sessions, 3, 80, nil)
 
 	if !strings.Contains(line, "#[reverse]") {
 		t.Errorf("expected active highlight, got: %s", line)
@@ -123,7 +123,7 @@ func TestFormatSessionLine_Overflow_ActiveAtEdges(t *testing.T) {
 	sessions := makeSessions(paths, states)
 
 	// Active is first -- should have right arrow but no left
-	line := formatSessionLine(windows, sessions, 0, 60)
+	line := formatSessionLine(windows, sessions, 0, 60, nil)
 	if strings.Contains(line, "\u25c0") {
 		t.Errorf("should not have left arrow when active is first, got: %s", line)
 	}
@@ -132,7 +132,7 @@ func TestFormatSessionLine_Overflow_ActiveAtEdges(t *testing.T) {
 	}
 
 	// Active is last -- should have left arrow but no right
-	line = formatSessionLine(windows, sessions, len(names)-1, 60)
+	line = formatSessionLine(windows, sessions, len(names)-1, 60, nil)
 	if !strings.Contains(line, "\u25c0") {
 		t.Errorf("should have left arrow when active is last, got: %s", line)
 	}
@@ -150,7 +150,7 @@ func TestFormatSessionLine_TruncatesLongNames(t *testing.T) {
 		[]string{"/home/user/long"},
 		[]claude.SessionState{claude.StateWorking},
 	)
-	line := formatSessionLine(windows, sessions, 0, 200)
+	line := formatSessionLine(windows, sessions, 0, 200, nil)
 
 	// Window name is truncated to 12 chars
 	if strings.Contains(line, "a-very-long-project-name") {
@@ -172,7 +172,7 @@ func TestFormatSessionLine_WindowWithNoSession(t *testing.T) {
 		{}, // no session for orphan
 	}
 
-	line := formatSessionLine(windows, sessions, 1, 200)
+	line := formatSessionLine(windows, sessions, 1, 200, nil)
 	// orphan has no session -- should show "?"
 	if !strings.Contains(line, "orphan ?") {
 		t.Errorf("expected orphan with ? state, got: %s", line)
@@ -425,45 +425,6 @@ func TestDismissedClearedOnStateChange(t *testing.T) {
 	}
 }
 
-func TestStaleWorkingDetectedAsToolPermission(t *testing.T) {
-	now := time.Now()
-	windows := makeWindows(
-		[]string{"alpha", "beta"},
-		[]string{"/a", "/b"},
-	)
-	sessions := []claude.Session{
-		{WorkspacePath: "/a", State: claude.StateWorking, ModTime: now},                                         // actively working
-		{WorkspacePath: "/b", State: claude.StateWorking, ModTime: now.Add(-staleWorkingThreshold - time.Second)}, // stale
-	}
-
-	fc := &FeedController{
-		allWindows:    windows,
-		stateByWindow: assignSessionsToWindows(windows, sessions),
-		dismissed:     make(map[string]bool),
-	}
-
-	// Apply the same stale Working override as refresh()
-	for i, s := range fc.stateByWindow {
-		if s.State == claude.StateWorking && time.Since(s.ModTime) > staleWorkingThreshold {
-			s.State = claude.StateToolPermission
-			fc.stateByWindow[i] = s
-		}
-	}
-
-	// Active session stays Working
-	if fc.stateByWindow[0].State != claude.StateWorking {
-		t.Errorf("expected alpha=Working (active), got %v", fc.stateByWindow[0].State)
-	}
-	// Stale session detected as ToolPermission
-	if fc.stateByWindow[1].State != claude.StateToolPermission {
-		t.Errorf("expected beta=ToolPermission (stale Working), got %v", fc.stateByWindow[1].State)
-	}
-	// ToolPermission needs attention
-	if !fc.stateByWindow[1].NeedsAttention() {
-		t.Errorf("expected stale Working (now ToolPermission) to need attention")
-	}
-}
-
 func TestSnoozeExcludesFromAttentionQueue(t *testing.T) {
 	snooze := &SnoozeStore{
 		entries: map[string]time.Time{
@@ -549,7 +510,7 @@ func TestSnoozedVisibleInShowAll(t *testing.T) {
 		}
 	}
 
-	line := formatSessionLine(windows, sessions, 1, 200, snoozedFlags)
+	line := formatSessionLine(windows, sessions, 1, 200, snoozedFlags, nil)
 
 	// beta should show "Snz" label
 	if !strings.Contains(line, "Snz") {
@@ -648,7 +609,7 @@ func TestRenderSessionLine_OnlyAttentionWindows(t *testing.T) {
 		}
 	}
 
-	line := formatSessionLine(filtered, filteredSessions, activeIdx, 200)
+	line := formatSessionLine(filtered, filteredSessions, activeIdx, 200, nil)
 
 	// Should contain beta and delta, NOT alpha or gamma
 	if strings.Contains(line, "alpha") {
@@ -803,5 +764,112 @@ func TestKillCurrent_KillLast(t *testing.T) {
 	}
 	if _, ok := fc.stateByWindow[1]; ok {
 		t.Errorf("index 1 should not exist after kill")
+	}
+}
+
+func TestPrioritySortsAttentionQueue(t *testing.T) {
+	priority := &PriorityStore{
+		entries: map[string]int{
+			"session-a.jsonl": 2, // P2
+			"session-c.jsonl": 0, // P0
+			// session-b.jsonl defaults to P4
+		},
+		path: filepath.Join(t.TempDir(), "priority.json"),
+	}
+
+	fc := &FeedController{
+		allWindows: makeWindows(
+			[]string{"alpha", "beta", "gamma"},
+			[]string{"/a", "/b", "/c"},
+		),
+		stateByWindow: map[int]claude.Session{
+			0: {SessionFile: "session-a.jsonl", State: claude.StateIdle},
+			1: {SessionFile: "session-b.jsonl", State: claude.StateIdle},
+			2: {SessionFile: "session-c.jsonl", State: claude.StateAsking},
+		},
+		dismissed: make(map[string]bool),
+		priority:  priority,
+	}
+
+	fc.updateDisplay()
+
+	// Expected order: P0 (gamma/session-c), P2 (alpha/session-a), P4 (beta/session-b)
+	if len(fc.attentionQueue) != 3 {
+		t.Fatalf("expected 3 items in attention queue, got %d", len(fc.attentionQueue))
+	}
+	if fc.attentionQueue[0] != 2 {
+		t.Errorf("expected first in queue = window 2 (P0), got %d", fc.attentionQueue[0])
+	}
+	if fc.attentionQueue[1] != 0 {
+		t.Errorf("expected second in queue = window 0 (P2), got %d", fc.attentionQueue[1])
+	}
+	if fc.attentionQueue[2] != 1 {
+		t.Errorf("expected third in queue = window 1 (P4/default), got %d", fc.attentionQueue[2])
+	}
+}
+
+func TestPrioritySameLevelPreservesWindowOrder(t *testing.T) {
+	priority := &PriorityStore{
+		entries: map[string]int{
+			"session-a.jsonl": 1,
+			"session-b.jsonl": 1,
+			"session-c.jsonl": 1,
+		},
+		path: filepath.Join(t.TempDir(), "priority.json"),
+	}
+
+	fc := &FeedController{
+		allWindows: makeWindows(
+			[]string{"alpha", "beta", "gamma"},
+			[]string{"/a", "/b", "/c"},
+		),
+		stateByWindow: map[int]claude.Session{
+			0: {SessionFile: "session-a.jsonl", State: claude.StateIdle},
+			1: {SessionFile: "session-b.jsonl", State: claude.StateAsking},
+			2: {SessionFile: "session-c.jsonl", State: claude.StateIdle},
+		},
+		dismissed: make(map[string]bool),
+		priority:  priority,
+	}
+
+	fc.updateDisplay()
+
+	// Same priority: should preserve window index order (0, 1, 2)
+	if len(fc.attentionQueue) != 3 {
+		t.Fatalf("expected 3 items in attention queue, got %d", len(fc.attentionQueue))
+	}
+	for i, expected := range []int{0, 1, 2} {
+		if fc.attentionQueue[i] != expected {
+			t.Errorf("queue[%d] = %d, expected %d (same priority should preserve order)", i, fc.attentionQueue[i], expected)
+		}
+	}
+}
+
+func TestSessionEntryTextWithPriority(t *testing.T) {
+	w := WindowInfo{Index: "0", Name: "myproject", Path: "/proj"}
+	s := claude.Session{State: claude.StateIdle}
+
+	// Default priority (P4): no prefix
+	text := sessionEntryText(w, s, false, DefaultPriority)
+	if strings.HasPrefix(text, "P") {
+		t.Errorf("default priority should not show prefix, got: %s", text)
+	}
+	if !strings.Contains(text, "myproject Idle*") {
+		t.Errorf("expected 'myproject Idle*', got: %s", text)
+	}
+
+	// P0: should show prefix
+	text = sessionEntryText(w, s, false, 0)
+	if !strings.HasPrefix(text, "P0 ") {
+		t.Errorf("P0 should show 'P0 ' prefix, got: %s", text)
+	}
+	if !strings.Contains(text, "P0 myproject Idle*") {
+		t.Errorf("expected 'P0 myproject Idle*', got: %s", text)
+	}
+
+	// P2: should show prefix
+	text = sessionEntryText(w, s, false, 2)
+	if !strings.HasPrefix(text, "P2 ") {
+		t.Errorf("P2 should show 'P2 ' prefix, got: %s", text)
 	}
 }
