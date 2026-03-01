@@ -63,9 +63,12 @@ func (fc *FeedController) renderSessionLine() {
 
 // sessionEntryText returns the display text for a window's session entry.
 func sessionEntryText(w WindowInfo, s claude.Session, snoozed bool) string {
-	name := strings.TrimSuffix(w.Name, "*")
-	if len(name) > 12 {
-		name = name[:12]
+	name := s.Summary
+	if name == "" {
+		name = strings.TrimSuffix(w.Name, "*")
+	}
+	if len(name) > 20 {
+		name = name[:20]
 	}
 
 	var stateStr string

@@ -864,3 +864,186 @@ func TestDiscoverSessions_ReturnsAllRecent(t *testing.T) {
 		t.Error("expected an Idle session")
 	}
 }
+
+// --- loadSessionIndex tests ---
+
+func TestLoadSessionIndex(t *testing.T) {
+	dir := t.TempDir()
+	indexPath := filepath.Join(dir, "sessions-index.json")
+	os.WriteFile(indexPath, []byte(`{"entries":[
+		{"sessionId":"abc-123","summary":"Fix login bug"},
+		{"sessionId":"def-456","summary":"Add search feature"}
+	]}`), 0644)
+
+	m := loadSessionIndex(dir)
+	if len(m) != 2 {
+		t.Fatalf("expected 2 entries, got %d", len(m))
+	}
+	if m["abc-123"] != "Fix login bug" {
+		t.Errorf("expected 'Fix login bug', got %q", m["abc-123"])
+	}
+	if m["def-456"] != "Add search feature" {
+		t.Errorf("expected 'Add search feature', got %q", m["def-456"])
+	}
+}
+
+func TestLoadSessionIndex_MissingFile(t *testing.T) {
+	m := loadSessionIndex(t.TempDir())
+	if m != nil {
+		t.Errorf("expected nil for missing file, got %v", m)
+	}
+}
+
+func TestLoadSessionIndex_InvalidJSON(t *testing.T) {
+	dir := t.TempDir()
+	os.WriteFile(filepath.Join(dir, "sessions-index.json"), []byte(`not json`), 0644)
+	m := loadSessionIndex(dir)
+	if m != nil {
+		t.Errorf("expected nil for invalid JSON, got %v", m)
+	}
+}
+
+func TestLoadSessionIndex_SkipsEmptyFields(t *testing.T) {
+	dir := t.TempDir()
+	os.WriteFile(filepath.Join(dir, "sessions-index.json"), []byte(`{"entries":[
+		{"sessionId":"","summary":"no id"},
+		{"sessionId":"abc","summary":""},
+		{"sessionId":"def","summary":"valid"}
+	]}`), 0644)
+
+	m := loadSessionIndex(dir)
+	if len(m) != 1 {
+		t.Fatalf("expected 1 entry, got %d", len(m))
+	}
+	if m["def"] != "valid" {
+		t.Errorf("expected 'valid', got %q", m["def"])
+	}
+}
+
+// --- extractCustomTitle tests ---
+
+func TestExtractCustomTitle(t *testing.T) {
+	data := joinLines(
+		metadataEntry("/tmp/proj"),
+		mainAssistant("end_turn", text()),
+		`{"type":"custom-title","customTitle":"my session"}`,
+	)
+	title := extractCustomTitle(data)
+	if title != "my session" {
+		t.Errorf("expected 'my session', got %q", title)
+	}
+}
+
+func TestExtractCustomTitle_UsesLast(t *testing.T) {
+	data := joinLines(
+		`{"type":"custom-title","customTitle":"first"}`,
+		mainAssistant("end_turn", text()),
+		`{"type":"custom-title","customTitle":"second"}`,
+	)
+	title := extractCustomTitle(data)
+	if title != "second" {
+		t.Errorf("expected 'second', got %q", title)
+	}
+}
+
+func TestExtractCustomTitle_None(t *testing.T) {
+	data := joinLines(
+		metadataEntry("/tmp/proj"),
+		mainAssistant("end_turn", text()),
+	)
+	title := extractCustomTitle(data)
+	if title != "" {
+		t.Errorf("expected empty, got %q", title)
+	}
+}
+
+// --- parseSessionState with summary ---
+
+func TestParseSessionState_CustomTitle(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "session.jsonl")
+	writeJSONL(t, path,
+		metadataEntry("/tmp/proj"),
+		`{"type":"custom-title","customTitle":"my named session"}`,
+		mainAssistant("end_turn", text()),
+	)
+
+	session, err := parseSessionState(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if session.Summary != "my named session" {
+		t.Errorf("expected 'my named session', got %q", session.Summary)
+	}
+}
+
+// --- DiscoverSessions with session index ---
+
+func TestDiscoverSessions_SummaryFromIndex(t *testing.T) {
+	tmpHome := t.TempDir()
+	projectsDir := filepath.Join(tmpHome, ".claude", "projects", "-tmp-proj")
+	if err := os.MkdirAll(projectsDir, 0755); err != nil {
+		t.Fatal(err)
+	}
+
+	// Create a session file
+	sessionPath := filepath.Join(projectsDir, "abc-123.jsonl")
+	writeJSONL(t, sessionPath,
+		metadataEntry("/tmp/proj"),
+		mainAssistant("end_turn", text()),
+	)
+
+	// Create sessions-index.json with a matching entry
+	indexData := `{"entries":[{"sessionId":"abc-123","summary":"Fix login bug"}]}`
+	os.WriteFile(filepath.Join(projectsDir, "sessions-index.json"), []byte(indexData), 0644)
+
+	origHome := os.Getenv("HOME")
+	os.Setenv("HOME", tmpHome)
+	defer os.Setenv("HOME", origHome)
+
+	sessions, err := DiscoverSessions(24 * time.Hour)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(sessions) != 1 {
+		t.Fatalf("expected 1 session, got %d", len(sessions))
+	}
+	if sessions[0].Summary != "Fix login bug" {
+		t.Errorf("expected 'Fix login bug', got %q", sessions[0].Summary)
+	}
+}
+
+func TestDiscoverSessions_CustomTitleOverridesIndex(t *testing.T) {
+	tmpHome := t.TempDir()
+	projectsDir := filepath.Join(tmpHome, ".claude", "projects", "-tmp-proj")
+	if err := os.MkdirAll(projectsDir, 0755); err != nil {
+		t.Fatal(err)
+	}
+
+	// Create a session with a custom-title
+	sessionPath := filepath.Join(projectsDir, "abc-123.jsonl")
+	writeJSONL(t, sessionPath,
+		metadataEntry("/tmp/proj"),
+		`{"type":"custom-title","customTitle":"User's title"}`,
+		mainAssistant("end_turn", text()),
+	)
+
+	// Index has a different summary for the same session
+	indexData := `{"entries":[{"sessionId":"abc-123","summary":"Auto summary"}]}`
+	os.WriteFile(filepath.Join(projectsDir, "sessions-index.json"), []byte(indexData), 0644)
+
+	origHome := os.Getenv("HOME")
+	os.Setenv("HOME", tmpHome)
+	defer os.Setenv("HOME", origHome)
+
+	sessions, err := DiscoverSessions(24 * time.Hour)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(sessions) != 1 {
+		t.Fatalf("expected 1 session, got %d", len(sessions))
+	}
+	if sessions[0].Summary != "User's title" {
+		t.Errorf("expected custom title to win, got %q", sessions[0].Summary)
+	}
+}
