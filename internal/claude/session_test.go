@@ -199,11 +199,11 @@ func TestClassifySessionState(t *testing.T) {
 			want: StateAsking,
 		},
 		{
-			name: "working: AskUserQuestion with null stop_reason (streaming partial)",
+			name: "asking: AskUserQuestion with null stop_reason",
 			lines: []string{
 				mainAssistant("", tool("AskUserQuestion")),
 			},
-			want: StateWorking,
+			want: StateAsking,
 		},
 		{
 			name: "asking: AskUserQuestion after text",
@@ -223,11 +223,11 @@ func TestClassifySessionState(t *testing.T) {
 			want: StatePlanMode,
 		},
 		{
-			name: "working: ExitPlanMode with null stop_reason (streaming partial)",
+			name: "plan: ExitPlanMode with null stop_reason",
 			lines: []string{
 				mainAssistant("", tool("ExitPlanMode")),
 			},
-			want: StateWorking,
+			want: StatePlanMode,
 		},
 
 		// === StateToolPermission ===
@@ -389,6 +389,51 @@ func TestClassifySessionState(t *testing.T) {
 			lines: []string{
 				mainAssistant("end_turn", text()),
 				systemEntry("local_command"),
+			},
+			want: StateIdle,
+		},
+
+		// === Bug 1: turn-completion signals ===
+		{
+			name: "idle: stop_hook_summary after null stop_reason",
+			lines: []string{
+				mainAssistant("", text()),
+				progressEntry("hook_progress"),
+				systemEntry("stop_hook_summary"),
+			},
+			want: StateIdle,
+		},
+		{
+			name: "idle: turn_duration after null stop_reason",
+			lines: []string{
+				mainAssistant("", text()),
+				systemEntry("turn_duration"),
+			},
+			want: StateIdle,
+		},
+		{
+			name: "working: stop_hook_summary then user message",
+			lines: []string{
+				mainAssistant("", text()),
+				systemEntry("stop_hook_summary"),
+				userText("do more"),
+			},
+			want: StateWorking,
+		},
+		{
+			name: "working: user message then stop_hook_summary (race condition)",
+			lines: []string{
+				mainAssistant("", text()),
+				userText("next task"),
+				systemEntry("stop_hook_summary"),
+			},
+			want: StateWorking,
+		},
+		{
+			name: "idle: stop_hook_summary after end_turn (no regression)",
+			lines: []string{
+				mainAssistant("end_turn", text()),
+				systemEntry("stop_hook_summary"),
 			},
 			want: StateIdle,
 		},

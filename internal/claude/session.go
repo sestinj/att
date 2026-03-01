@@ -187,6 +187,10 @@ type contentBlock struct {
 // Unknown entry types default to not needing attention (no state change).
 func ClassifySessionState(data []byte) SessionState {
 	state := StateUnknown
+	// Tracks whether a user message appeared after the last assistant entry.
+	// Guards against a race where stop_hook_summary arrives after the next
+	// user message due to async hook execution.
+	var userAfterAssistant bool
 
 	for _, line := range bytes.Split(data, []byte{'\n'}) {
 		if len(line) == 0 {
@@ -208,10 +212,12 @@ func ClassifySessionState(data []byte) SessionState {
 				continue
 			}
 			state = classifyAssistantMessage(entry.Message)
+			userAfterAssistant = false
 
 		case "user":
 			if entry.Message != nil {
 				state = StateWorking
+				userAfterAssistant = true
 			}
 
 		case "progress":
@@ -232,7 +238,16 @@ func ClassifySessionState(data []byte) SessionState {
 			case "api_error":
 				// Claude Code is retrying an API call — still working.
 				state = StateWorking
-			// stop_hook_summary, turn_duration, compact_boundary, local_command:
+			case "stop_hook_summary", "turn_duration":
+				// Turn-completion signals. Claude Code often writes the last
+				// assistant entry with stop_reason=null (streaming partial),
+				// so these are the reliable indicators that the turn ended.
+				// Guard: only transition if no user message came after the
+				// assistant entry (race condition from async hooks).
+				if state == StateWorking && !userAfterAssistant {
+					state = StateIdle
+				}
+			// compact_boundary, local_command:
 			// Post-turn bookkeeping or informational. No state change.
 			}
 
@@ -259,8 +274,13 @@ func classifyAssistantMessage(msg *messageEnvelope) SessionState {
 		return classifyToolUse(msg.Content)
 
 	case "":
-		// Null stop_reason = streaming partial. The final state isn't known
-		// until stop_reason is set, so treat as Working.
+		// Null stop_reason = streaming partial. But Claude Code often doesn't
+		// write the final entry with the real stop_reason. If the content
+		// already has interactive tool blocks, classify by the tool.
+		toolState := classifyToolUse(msg.Content)
+		if toolState == StateAsking || toolState == StatePlanMode {
+			return toolState
+		}
 		return StateWorking
 
 	default:
