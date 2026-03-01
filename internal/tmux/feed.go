@@ -14,14 +14,14 @@ import (
 	"time"
 
 	"github.com/sestinj/att/internal/claude"
-	"github.com/sestinj/att/internal/config"
 )
 
 type FeedController struct {
 	allWindows         []WindowInfo
 	discoveredSessions []claude.Session
 	stateByWindow      map[int]claude.Session // session assigned to each window index
-	cursor             int                    // index into allWindows
+	attention          map[string]bool        // transcript paths needing attention (from attention dir)
+	cursor             string                 // tmux window Index (e.g. "0", "3")
 	attentionQueue     []int                  // indices into allWindows for windows needing attention
 	dismissed          map[string]bool        // session file paths dismissed by user, hidden until state changes
 	snooze             *SnoozeStore           // time-based snooze for sessions
@@ -76,6 +76,17 @@ func WithProjects(projects []string) FeedOption {
 
 func WithDirCommand(cmd string) FeedOption {
 	return func(fc *FeedController) { fc.dirCommand = cmd }
+}
+
+// cursorPos resolves the cursor (tmux window Index) to a slice position
+// in allWindows. Returns -1 if the window no longer exists.
+func (fc *FeedController) cursorPos() int {
+	for i, w := range fc.allWindows {
+		if w.Index == fc.cursor {
+			return i
+		}
+	}
+	return -1
 }
 
 func (fc *FeedController) Run() error {
@@ -270,6 +281,12 @@ func (fc *FeedController) refresh() {
 	}
 	fc.discoveredSessions = sessions
 
+	// Read attention state from hook-written files
+	fc.attention = claude.ReadAttentionSet()
+
+	// Clean up attention files for dead transcripts
+	claude.CleanupStaleAttention(24 * time.Hour)
+
 	windows, err := ListWindows(fc.baseSession)
 	if err != nil {
 		return
@@ -278,7 +295,7 @@ func (fc *FeedController) refresh() {
 	fc.allWindows = windows
 
 	// Assign sessions to windows (filters out stale sessions)
-	fc.stateByWindow = assignSessionsToWindows(windows, sessions)
+	fc.stateByWindow = assignSessionsToWindows(windows, sessions, fc.attention)
 
 	fc.updateDisplay()
 }
@@ -295,29 +312,28 @@ func (fc *FeedController) refreshWindows() {
 	}
 	windows = fc.cleanupPlaceholder(windows)
 	fc.allWindows = windows
-	fc.stateByWindow = assignSessionsToWindows(windows, fc.discoveredSessions)
+	fc.stateByWindow = assignSessionsToWindows(windows, fc.discoveredSessions, fc.attention)
 	fc.updateDisplay()
 }
 
-// refreshAssigned re-stats and re-reads only the JSONL files already assigned
-// to windows. Returns true if any session state changed.
+// refreshAssigned re-reads the attention directory (one os.ReadDir call)
+// and returns true if the attention set changed.
 func (fc *FeedController) refreshAssigned() bool {
-	changed := false
-	for i, s := range fc.stateByWindow {
-		if s.SessionFile == "" {
-			continue
+	updated := claude.ReadAttentionSet()
+
+	// Compare with previous attention set
+	changed := len(updated) != len(fc.attention)
+	if !changed {
+		for k := range updated {
+			if !fc.attention[k] {
+				changed = true
+				break
+			}
 		}
-		info, err := os.Stat(s.SessionFile)
-		if err != nil || info.ModTime().Equal(s.ModTime) {
-			continue
-		}
-		updated, err := claude.ParseSessionFile(s.SessionFile)
-		if err != nil {
-			continue
-		}
-		updated.ModTime = info.ModTime()
-		fc.stateByWindow[i] = updated
-		changed = true
+	}
+
+	if changed {
+		fc.attention = updated
 	}
 	return changed
 }
@@ -325,10 +341,10 @@ func (fc *FeedController) refreshAssigned() bool {
 // updateDisplay rebuilds the attention queue, clears stale dismissals,
 // renames windows, clamps the cursor, and renders the session line.
 func (fc *FeedController) updateDisplay() {
-	// Build attention set from assigned sessions only (not stale ones)
+	// Build attention set from assigned sessions + attention directory
 	needsAttention := make(map[int]bool) // keyed by window index
 	for i, s := range fc.stateByWindow {
-		if s.NeedsAttention() {
+		if fc.attention[s.SessionFile] {
 			needsAttention[i] = true
 		}
 	}
@@ -382,23 +398,22 @@ func (fc *FeedController) updateDisplay() {
 		})
 	}
 
-	// Clamp cursor
-	if len(fc.allWindows) > 0 && fc.cursor >= len(fc.allWindows) {
-		fc.cursor = len(fc.allWindows) - 1
+	// Clamp cursor: if the window it points to no longer exists, fall back
+	if len(fc.allWindows) > 0 && fc.cursorPos() == -1 {
+		fc.cursor = fc.allWindows[0].Index
 	}
 	if len(fc.allWindows) == 0 {
-		fc.cursor = 0
+		fc.cursor = ""
 	}
 
 	fc.renderSessionLine()
 }
 
 func (fc *FeedController) focusCurrent() {
-	if fc.cursor >= len(fc.allWindows) {
+	if fc.cursor == "" {
 		return
 	}
-	w := fc.allWindows[fc.cursor]
-	SelectWindow(fc.sessionName, w.Index)
+	SelectWindow(fc.sessionName, fc.cursor)
 }
 
 func (fc *FeedController) next() {
@@ -406,12 +421,19 @@ func (fc *FeedController) next() {
 		if len(fc.allWindows) == 0 {
 			return
 		}
-		fc.cursor = (fc.cursor + 1) % len(fc.allWindows)
+		pos := fc.cursorPos()
+		if pos == -1 {
+			pos = 0
+		} else {
+			pos = (pos + 1) % len(fc.allWindows)
+		}
+		fc.cursor = fc.allWindows[pos].Index
 	} else {
 		if len(fc.attentionQueue) == 0 {
 			return
 		}
-		fc.cursor = fc.nextInQueue(1)
+		qi := fc.nextInQueue(1)
+		fc.cursor = fc.allWindows[qi].Index
 	}
 	fc.focusCurrent()
 	fc.updateStatusBar()
@@ -423,12 +445,19 @@ func (fc *FeedController) prev() {
 		if len(fc.allWindows) == 0 {
 			return
 		}
-		fc.cursor = (fc.cursor - 1 + len(fc.allWindows)) % len(fc.allWindows)
+		pos := fc.cursorPos()
+		if pos == -1 {
+			pos = 0
+		} else {
+			pos = (pos - 1 + len(fc.allWindows)) % len(fc.allWindows)
+		}
+		fc.cursor = fc.allWindows[pos].Index
 	} else {
 		if len(fc.attentionQueue) == 0 {
 			return
 		}
-		fc.cursor = fc.nextInQueue(-1)
+		qi := fc.nextInQueue(-1)
+		fc.cursor = fc.allWindows[qi].Index
 	}
 	fc.focusCurrent()
 	fc.updateStatusBar()
@@ -440,7 +469,7 @@ func (fc *FeedController) prev() {
 func (fc *FeedController) nextInQueue(dir int) int {
 	curIdx := -1
 	for i, wi := range fc.attentionQueue {
-		if wi == fc.cursor {
+		if fc.allWindows[wi].Index == fc.cursor {
 			curIdx = i
 			break
 		}
@@ -464,8 +493,10 @@ func (fc *FeedController) dismissAndAdvance() {
 	}
 
 	// Add current window's session to dismissed set
-	if s, ok := fc.stateByWindow[fc.cursor]; ok && s.SessionFile != "" {
-		fc.dismissed[s.SessionFile] = true
+	if pos := fc.cursorPos(); pos >= 0 {
+		if s, ok := fc.stateByWindow[pos]; ok && s.SessionFile != "" {
+			fc.dismissed[s.SessionFile] = true
+		}
 	}
 
 	fc.removeFromQueueAndAdvance()
@@ -477,7 +508,11 @@ func (fc *FeedController) snoozeAndAdvance(durStr string) {
 	}
 
 	// Get current window's session file
-	s, ok := fc.stateByWindow[fc.cursor]
+	pos := fc.cursorPos()
+	if pos < 0 {
+		return
+	}
+	s, ok := fc.stateByWindow[pos]
 	if !ok || s.SessionFile == "" {
 		return
 	}
@@ -510,7 +545,11 @@ func (fc *FeedController) setPriority(levelStr string) {
 	if err != nil || level < 0 || level > 4 {
 		return
 	}
-	s, ok := fc.stateByWindow[fc.cursor]
+	pos := fc.cursorPos()
+	if pos < 0 {
+		return
+	}
+	s, ok := fc.stateByWindow[pos]
 	if !ok || s.SessionFile == "" {
 		return
 	}
@@ -524,7 +563,7 @@ func (fc *FeedController) setPriority(levelStr string) {
 func (fc *FeedController) removeFromQueueAndAdvance() {
 	curIdx := -1
 	for i, wi := range fc.attentionQueue {
-		if wi == fc.cursor {
+		if fc.allWindows[wi].Index == fc.cursor {
 			curIdx = i
 			break
 		}
@@ -537,10 +576,10 @@ func (fc *FeedController) removeFromQueueAndAdvance() {
 			if nextIdx >= len(fc.attentionQueue) {
 				nextIdx = 0
 			}
-			fc.cursor = fc.attentionQueue[nextIdx]
+			fc.cursor = fc.allWindows[fc.attentionQueue[nextIdx]].Index
 		}
 	} else if len(fc.attentionQueue) > 0 {
-		fc.cursor = fc.attentionQueue[0]
+		fc.cursor = fc.allWindows[fc.attentionQueue[0]].Index
 	}
 
 	fc.focusCurrent()
@@ -555,14 +594,24 @@ func (fc *FeedController) newSession(dir string) {
 	}
 	windowName := filepath.Base(absDir)
 
-	resolved, err := config.ResolveDir(fc.dirCommand, absDir)
-	if err != nil {
-		exec.Command("tmux", "display-message", fmt.Sprintf("dir_command failed: %v", err)).Run()
-		return
+	// Dir resolution runs inside the shell wrapper (after `read`) so the
+	// tmux window appears instantly with the `> ` prompt.
+	var dirSnippet string
+	if fc.dirCommand != "" {
+		dirSnippet = fmt.Sprintf(
+			`d=$(%s 2>/dev/null); [ -n "$d" ] && cd "$d"; `,
+			fc.dirCommand,
+		)
+	} else {
+		dirSnippet = `d=$(git rev-parse --show-toplevel 2>/dev/null); [ -n "$d" ] && cd "$d"; `
 	}
-	absDir = resolved
 
-	idx, err := NewWindow(fc.baseSession, windowName, absDir, fc.command)
+	wrappedCmd := fmt.Sprintf(
+		`sh -c 'printf "> "; IFS= read -r p; %sif [ -n "$p" ]; then printf "%%s\n" "$p" | %s; else %s; fi'`,
+		dirSnippet, fc.command, fc.command,
+	)
+
+	idx, err := NewWindow(fc.baseSession, windowName, absDir, wrappedCmd)
 	if err != nil {
 		return
 	}
@@ -570,24 +619,20 @@ func (fc *FeedController) newSession(dir string) {
 	fc.refreshWindows()
 
 	// Focus the newly created window
-	for i, w := range fc.allWindows {
-		if w.Index == idx {
-			fc.cursor = i
-			fc.focusCurrent()
-			break
-		}
-	}
+	fc.cursor = idx
+	fc.focusCurrent()
 	fc.updateStatusBar()
 }
 
 func (fc *FeedController) killCurrent() {
-	if len(fc.allWindows) == 0 {
+	pos := fc.cursorPos()
+	if pos < 0 || len(fc.allWindows) == 0 {
 		return
 	}
-	w := fc.allWindows[fc.cursor]
+	w := fc.allWindows[pos]
 
 	// Clear any dismissed/snoozed/priority state for this window's session
-	if s, ok := fc.stateByWindow[fc.cursor]; ok && s.SessionFile != "" {
+	if s, ok := fc.stateByWindow[pos]; ok && s.SessionFile != "" {
 		delete(fc.dismissed, s.SessionFile)
 		if fc.snooze != nil {
 			fc.snooze.Unsnooze(s.SessionFile)
@@ -603,15 +648,14 @@ func (fc *FeedController) killCurrent() {
 	// In-memory update: splice the killed window out of allWindows and
 	// rebuild stateByWindow with shifted indices. This avoids the expensive
 	// DiscoverSessions scan — the 5s periodic refresh reconciles with truth.
-	killedIdx := fc.cursor
-	fc.allWindows = append(fc.allWindows[:killedIdx], fc.allWindows[killedIdx+1:]...)
+	fc.allWindows = append(fc.allWindows[:pos], fc.allWindows[pos+1:]...)
 
 	newState := make(map[int]claude.Session, len(fc.stateByWindow))
 	for i, s := range fc.stateByWindow {
-		if i == killedIdx {
+		if i == pos {
 			continue
 		}
-		if i > killedIdx {
+		if i > pos {
 			newState[i-1] = s
 		} else {
 			newState[i] = s
@@ -619,23 +663,36 @@ func (fc *FeedController) killCurrent() {
 	}
 	fc.stateByWindow = newState
 
+	// Set cursor to the window now at the killed position (or last if killed was last)
+	if len(fc.allWindows) > 0 {
+		newPos := pos
+		if newPos >= len(fc.allWindows) {
+			newPos = len(fc.allWindows) - 1
+		}
+		fc.cursor = fc.allWindows[newPos].Index
+	} else {
+		fc.cursor = ""
+	}
+
 	fc.updateDisplay()
 	fc.updateStatusBar()
+	fc.focusCurrent()
 }
 
 func (fc *FeedController) updateStatusBar() {
-	if len(fc.allWindows) == 0 {
+	pos := fc.cursorPos()
+	if pos < 0 || len(fc.allWindows) == 0 {
 		SetStatusRightForSession(fc.sessionName, "att | No windows | ^Q quit")
 		return
 	}
 
-	w := fc.allWindows[fc.cursor]
+	w := fc.allWindows[pos]
 	name := strings.TrimSuffix(w.Name, "*")
 	attn := len(fc.attentionQueue)
 
 	// Prepend priority indicator when non-default
-	if s, ok := fc.stateByWindow[fc.cursor]; ok && fc.priority != nil {
-		if p := fc.priority.Get(s.SessionFile); p < DefaultPriority {
+	if s, ok := fc.stateByWindow[pos]; ok && fc.priority != nil {
+		if p := fc.priority.Get(s.SessionFile); p != DefaultPriority {
 			name = fmt.Sprintf("P%d %s", p, name)
 		}
 	}
@@ -643,13 +700,13 @@ func (fc *FeedController) updateStatusBar() {
 	var status string
 	if fc.showAll {
 		status = fmt.Sprintf("att | %s [%d/%d] | ALL | M-a filter | ^Q quit",
-			name, fc.cursor+1, len(fc.allWindows))
+			name, pos+1, len(fc.allWindows))
 	} else if attn == 0 {
 		status = fmt.Sprintf("att | %s [%d/%d] | All clear | M-a show all | ^Q quit",
-			name, fc.cursor+1, len(fc.allWindows))
+			name, pos+1, len(fc.allWindows))
 	} else {
 		status = fmt.Sprintf("att | %s [%d/%d] | %d need attention | M-a show all | ^Q quit",
-			name, fc.cursor+1, len(fc.allWindows), attn)
+			name, pos+1, len(fc.allWindows), attn)
 	}
 	SetStatusRightForSession(fc.sessionName, status)
 }

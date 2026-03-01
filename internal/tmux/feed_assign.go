@@ -75,7 +75,8 @@ func (fc *FeedController) cleanupPlaceholder(windows []WindowInfo) []WindowInfo 
 // When multiple windows share the same workspace path, each window gets
 // one of the most recently modified sessions at that path. Old dead sessions
 // (from Claude processes that exited hours ago) are excluded.
-func assignSessionsToWindows(windows []WindowInfo, sessions []claude.Session) map[int]claude.Session {
+// attention is the set of transcript paths currently needing attention.
+func assignSessionsToWindows(windows []WindowInfo, sessions []claude.Session, attention map[string]bool) map[int]claude.Session {
 	// Count how many windows per path
 	windowsPerPath := make(map[string]int)
 	for _, w := range windows {
@@ -90,7 +91,7 @@ func assignSessionsToWindows(windows []WindowInfo, sessions []claude.Session) ma
 	for path := range byPath {
 		group := byPath[path]
 		sort.SliceStable(group, func(i, j int) bool {
-			ai, aj := group[i].NeedsAttention(), group[j].NeedsAttention()
+			ai, aj := attention[group[i].SessionFile], attention[group[j].SessionFile]
 			if ai != aj {
 				return ai
 			}
