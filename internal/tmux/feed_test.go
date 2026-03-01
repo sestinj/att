@@ -464,6 +464,161 @@ func TestStaleWorkingDetectedAsToolPermission(t *testing.T) {
 	}
 }
 
+func TestSnoozeExcludesFromAttentionQueue(t *testing.T) {
+	snooze := &SnoozeStore{
+		entries: map[string]time.Time{
+			"session-b.jsonl": time.Now().Add(1 * time.Hour), // snoozed
+		},
+	}
+
+	fc := &FeedController{
+		allWindows: makeWindows(
+			[]string{"alpha", "beta", "gamma"},
+			[]string{"/a", "/b", "/c"},
+		),
+		stateByWindow: map[int]claude.Session{
+			0: {SessionFile: "session-a.jsonl", State: claude.StateIdle},
+			1: {SessionFile: "session-b.jsonl", State: claude.StateIdle},
+			2: {SessionFile: "session-c.jsonl", State: claude.StateAsking},
+		},
+		dismissed: make(map[string]bool),
+		snooze:    snooze,
+	}
+
+	fc.updateDisplay()
+
+	// beta is snoozed, so only alpha and gamma should be in the attention queue
+	if len(fc.attentionQueue) != 2 {
+		t.Fatalf("expected 2 items in attention queue, got %d", len(fc.attentionQueue))
+	}
+	for _, wi := range fc.attentionQueue {
+		if wi == 1 {
+			t.Errorf("snoozed session beta should not be in attention queue")
+		}
+	}
+}
+
+func TestSnoozeExpiredRestoresToQueue(t *testing.T) {
+	snooze := &SnoozeStore{
+		entries: map[string]time.Time{
+			"session-b.jsonl": time.Now().Add(-1 * time.Minute), // expired
+		},
+	}
+
+	fc := &FeedController{
+		allWindows: makeWindows(
+			[]string{"alpha", "beta"},
+			[]string{"/a", "/b"},
+		),
+		stateByWindow: map[int]claude.Session{
+			0: {SessionFile: "session-a.jsonl", State: claude.StateIdle},
+			1: {SessionFile: "session-b.jsonl", State: claude.StateIdle},
+		},
+		dismissed: make(map[string]bool),
+		snooze:    snooze,
+	}
+
+	fc.updateDisplay()
+
+	// Expired snooze should not filter beta out
+	if len(fc.attentionQueue) != 2 {
+		t.Fatalf("expected 2 items in attention queue (expired snooze), got %d", len(fc.attentionQueue))
+	}
+}
+
+func TestSnoozedVisibleInShowAll(t *testing.T) {
+	snooze := &SnoozeStore{
+		entries: map[string]time.Time{
+			"session-b.jsonl": time.Now().Add(1 * time.Hour),
+		},
+	}
+
+	windows := makeWindows(
+		[]string{"alpha", "beta"},
+		[]string{"/a", "/b"},
+	)
+	sessions := []claude.Session{
+		{WorkspacePath: "/a", State: claude.StateWorking},
+		{WorkspacePath: "/b", SessionFile: "session-b.jsonl", State: claude.StateIdle},
+	}
+
+	snoozedFlags := make([]bool, len(windows))
+	for i := range windows {
+		if i < len(sessions) {
+			snoozedFlags[i] = snooze.IsSnoozed(sessions[i].SessionFile)
+		}
+	}
+
+	line := formatSessionLine(windows, sessions, 1, 200, snoozedFlags)
+
+	// beta should show "Snz" label
+	if !strings.Contains(line, "Snz") {
+		t.Errorf("expected Snz label for snoozed session, got: %s", line)
+	}
+	// alpha should not show Snz
+	if strings.Contains(line, "alpha Work Snz") {
+		t.Errorf("non-snoozed session should not show Snz, got: %s", line)
+	}
+}
+
+func TestSnoozeStorePersistence(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "snooze.json")
+
+	// Create and save
+	store := LoadSnooze(path)
+	expiry := time.Now().Add(1 * time.Hour).Truncate(time.Second)
+	store.Snooze("/tmp/session.jsonl", expiry)
+
+	// Reload and verify
+	store2 := LoadSnooze(path)
+	if !store2.IsSnoozed("/tmp/session.jsonl") {
+		t.Errorf("expected session to be snoozed after reload")
+	}
+
+	// Unsnooze and verify
+	store2.Unsnooze("/tmp/session.jsonl")
+	store3 := LoadSnooze(path)
+	if store3.IsSnoozed("/tmp/session.jsonl") {
+		t.Errorf("expected session to not be snoozed after unsnooze")
+	}
+}
+
+func TestSnoozeAndAdvance(t *testing.T) {
+	snooze := &SnoozeStore{
+		entries: make(map[string]time.Time),
+		path:    filepath.Join(t.TempDir(), "snooze.json"),
+	}
+
+	fc := &FeedController{
+		allWindows: makeWindows(
+			[]string{"alpha", "beta", "gamma"},
+			[]string{"/a", "/b", "/c"},
+		),
+		stateByWindow: map[int]claude.Session{
+			0: {SessionFile: "session-a.jsonl", State: claude.StateIdle},
+			1: {SessionFile: "session-b.jsonl", State: claude.StateIdle},
+			2: {SessionFile: "session-c.jsonl", State: claude.StateAsking},
+		},
+		attentionQueue: []int{0, 1, 2},
+		cursor:         0,
+		dismissed:      make(map[string]bool),
+		snooze:         snooze,
+	}
+
+	// Snooze alpha -> should advance to beta
+	fc.snoozeAndAdvance("1h")
+	if fc.cursor != 1 {
+		t.Errorf("expected cursor=1 (beta), got cursor=%d", fc.cursor)
+	}
+	if !snooze.IsSnoozed("session-a.jsonl") {
+		t.Errorf("expected session-a.jsonl to be snoozed")
+	}
+	if len(fc.attentionQueue) != 2 {
+		t.Errorf("expected 2 items in queue, got %d", len(fc.attentionQueue))
+	}
+}
+
 func TestRenderSessionLine_OnlyAttentionWindows(t *testing.T) {
 	// Simulate what renderSessionLine does: filter to attention windows only
 	allWindows := makeWindows(
@@ -507,5 +662,146 @@ func TestRenderSessionLine_OnlyAttentionWindows(t *testing.T) {
 	}
 	if !strings.Contains(line, "#[reverse]delta Ask*#[noreverse]") {
 		t.Errorf("expected delta highlighted, got: %s", line)
+	}
+}
+
+func TestKillCurrent_IndexShift(t *testing.T) {
+	// Simulate killCurrent's in-memory update: killing window at index 1
+	// should shift indices 2,3 down to 1,2.
+	fc := &FeedController{
+		allWindows: makeWindows(
+			[]string{"alpha", "beta", "gamma", "delta"},
+			[]string{"/a", "/b", "/c", "/d"},
+		),
+		stateByWindow: map[int]claude.Session{
+			0: {SessionFile: "session-a.jsonl", State: claude.StateWorking},
+			1: {SessionFile: "session-b.jsonl", State: claude.StateIdle},
+			2: {SessionFile: "session-c.jsonl", State: claude.StateAsking},
+			3: {SessionFile: "session-d.jsonl", State: claude.StateWorking},
+		},
+		cursor:    1, // killing beta
+		dismissed: make(map[string]bool),
+	}
+
+	// Perform the same in-memory splice as killCurrent
+	killedIdx := fc.cursor
+	fc.allWindows = append(fc.allWindows[:killedIdx], fc.allWindows[killedIdx+1:]...)
+
+	newState := make(map[int]claude.Session, len(fc.stateByWindow))
+	for i, s := range fc.stateByWindow {
+		if i == killedIdx {
+			continue
+		}
+		if i > killedIdx {
+			newState[i-1] = s
+		} else {
+			newState[i] = s
+		}
+	}
+	fc.stateByWindow = newState
+
+	// Verify windows
+	if len(fc.allWindows) != 3 {
+		t.Fatalf("expected 3 windows, got %d", len(fc.allWindows))
+	}
+	if fc.allWindows[0].Name != "alpha" || fc.allWindows[1].Name != "gamma" || fc.allWindows[2].Name != "delta" {
+		t.Errorf("unexpected window order: %v", fc.allWindows)
+	}
+
+	// Verify state mapping shifted correctly
+	if fc.stateByWindow[0].SessionFile != "session-a.jsonl" {
+		t.Errorf("index 0: expected session-a, got %s", fc.stateByWindow[0].SessionFile)
+	}
+	if fc.stateByWindow[1].SessionFile != "session-c.jsonl" {
+		t.Errorf("index 1: expected session-c (shifted from 2), got %s", fc.stateByWindow[1].SessionFile)
+	}
+	if fc.stateByWindow[2].SessionFile != "session-d.jsonl" {
+		t.Errorf("index 2: expected session-d (shifted from 3), got %s", fc.stateByWindow[2].SessionFile)
+	}
+	if _, ok := fc.stateByWindow[3]; ok {
+		t.Errorf("index 3 should not exist after kill")
+	}
+}
+
+func TestKillCurrent_KillFirst(t *testing.T) {
+	fc := &FeedController{
+		allWindows: makeWindows(
+			[]string{"alpha", "beta", "gamma"},
+			[]string{"/a", "/b", "/c"},
+		),
+		stateByWindow: map[int]claude.Session{
+			0: {SessionFile: "session-a.jsonl", State: claude.StateIdle},
+			1: {SessionFile: "session-b.jsonl", State: claude.StateWorking},
+			2: {SessionFile: "session-c.jsonl", State: claude.StateAsking},
+		},
+		cursor:    0, // killing alpha
+		dismissed: make(map[string]bool),
+	}
+
+	killedIdx := fc.cursor
+	fc.allWindows = append(fc.allWindows[:killedIdx], fc.allWindows[killedIdx+1:]...)
+
+	newState := make(map[int]claude.Session, len(fc.stateByWindow))
+	for i, s := range fc.stateByWindow {
+		if i == killedIdx {
+			continue
+		}
+		if i > killedIdx {
+			newState[i-1] = s
+		} else {
+			newState[i] = s
+		}
+	}
+	fc.stateByWindow = newState
+
+	if len(fc.allWindows) != 2 {
+		t.Fatalf("expected 2 windows, got %d", len(fc.allWindows))
+	}
+	if fc.stateByWindow[0].SessionFile != "session-b.jsonl" {
+		t.Errorf("index 0: expected session-b, got %s", fc.stateByWindow[0].SessionFile)
+	}
+	if fc.stateByWindow[1].SessionFile != "session-c.jsonl" {
+		t.Errorf("index 1: expected session-c, got %s", fc.stateByWindow[1].SessionFile)
+	}
+}
+
+func TestKillCurrent_KillLast(t *testing.T) {
+	fc := &FeedController{
+		allWindows: makeWindows(
+			[]string{"alpha", "beta"},
+			[]string{"/a", "/b"},
+		),
+		stateByWindow: map[int]claude.Session{
+			0: {SessionFile: "session-a.jsonl", State: claude.StateWorking},
+			1: {SessionFile: "session-b.jsonl", State: claude.StateIdle},
+		},
+		cursor:    1, // killing last (beta)
+		dismissed: make(map[string]bool),
+	}
+
+	killedIdx := fc.cursor
+	fc.allWindows = append(fc.allWindows[:killedIdx], fc.allWindows[killedIdx+1:]...)
+
+	newState := make(map[int]claude.Session, len(fc.stateByWindow))
+	for i, s := range fc.stateByWindow {
+		if i == killedIdx {
+			continue
+		}
+		if i > killedIdx {
+			newState[i-1] = s
+		} else {
+			newState[i] = s
+		}
+	}
+	fc.stateByWindow = newState
+
+	if len(fc.allWindows) != 1 {
+		t.Fatalf("expected 1 window, got %d", len(fc.allWindows))
+	}
+	if fc.stateByWindow[0].SessionFile != "session-a.jsonl" {
+		t.Errorf("index 0: expected session-a, got %s", fc.stateByWindow[0].SessionFile)
+	}
+	if _, ok := fc.stateByWindow[1]; ok {
+		t.Errorf("index 1 should not exist after kill")
 	}
 }

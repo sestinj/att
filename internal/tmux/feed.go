@@ -2,11 +2,11 @@ package tmux
 
 import (
 	"fmt"
+	"log"
 	"os"
 	"os/exec"
 	"os/signal"
 	"path/filepath"
-	"sort"
 	"strconv"
 	"strings"
 	"syscall"
@@ -29,6 +29,7 @@ type FeedController struct {
 	cursor             int                    // index into allWindows
 	attentionQueue     []int                  // indices into allWindows for windows needing attention
 	dismissed          map[string]bool        // session file paths dismissed by user, hidden until state changes
+	snooze             *SnoozeStore           // time-based snooze for sessions
 	fifoPath           string
 	origStatusRight    string
 	origStatusLeft     string
@@ -81,51 +82,20 @@ func WithDirCommand(cmd string) FeedOption {
 	return func(fc *FeedController) { fc.dirCommand = cmd }
 }
 
-// cleanupStale removes att-feed-* tmux sessions and /tmp/att-feed-*.fifo
-// files left behind by previous att processes that crashed (SIGKILL, etc.)
-// without running their deferred cleanup.
-func (fc *FeedController) cleanupStale() {
-	// Kill grouped feed sessions whose PID no longer exists
-	sessions, _ := exec.Command("tmux", "list-sessions", "-F", "#{session_name}").Output()
-	for _, name := range strings.Split(strings.TrimSpace(string(sessions)), "\n") {
-		if !strings.HasPrefix(name, "att-feed-") {
-			continue
-		}
-		pidStr := strings.TrimPrefix(name, "att-feed-")
-		pid, err := strconv.Atoi(pidStr)
-		if err != nil {
-			continue
-		}
-		// Check if the PID is still alive
-		if err := syscall.Kill(pid, 0); err != nil {
-			KillSession(name)
-		}
-	}
-
-	// Remove stale FIFOs
-	matches, _ := filepath.Glob("/tmp/att-feed-*.fifo")
-	for _, path := range matches {
-		base := filepath.Base(path)
-		pidStr := strings.TrimPrefix(base, "att-feed-")
-		pidStr = strings.TrimSuffix(pidStr, ".fifo")
-		pid, err := strconv.Atoi(pidStr)
-		if err != nil {
-			continue
-		}
-		if err := syscall.Kill(pid, 0); err != nil {
-			os.Remove(path)
-		}
-	}
-}
-
 func (fc *FeedController) Run() error {
 	// Clean up stale feed sessions and FIFOs from previous crashes
 	fc.cleanupStale()
 
+	// Initialize snooze store
+	if fc.snooze == nil {
+		home, _ := os.UserHomeDir()
+		fc.snooze = LoadSnooze(filepath.Join(home, ".config", "att", "snooze.json"))
+	}
+
 	// Ensure base att tmux session exists
 	if !HasSession(fc.baseSession) {
 		// Create with a blank placeholder (not a shell) — use M-n to start a real session
-		if _, err := NewSession(fc.baseSession, "att", "", "tail -f /dev/null"); err != nil {
+		if _, err := NewSession(fc.baseSession, "_init", "", "tail -f /dev/null"); err != nil {
 			return fmt.Errorf("create tmux session: %w", err)
 		}
 	}
@@ -162,7 +132,6 @@ func (fc *FeedController) Run() error {
 	}
 	defer os.Remove(fc.fifoPath)
 
-	// Bind keys and ensure cleanup
 	fc.bindKeys()
 	defer fc.unbindKeys()
 	defer fc.restoreStatus()
@@ -268,6 +237,8 @@ func (fc *FeedController) Run() error {
 				fc.killCurrent()
 			case cmd == "toggleall":
 				fc.toggleShowAll()
+			case strings.HasPrefix(cmd, "snooze "):
+				fc.snoozeAndAdvance(strings.TrimPrefix(cmd, "snooze "))
 			case strings.HasPrefix(cmd, "new "):
 				dir := strings.TrimPrefix(cmd, "new ")
 				fc.newSession(dir)
@@ -276,6 +247,8 @@ func (fc *FeedController) Run() error {
 		case <-fullTicker.C:
 			fc.refresh()
 			fc.updateStatusBar()
+			// Defensive re-bind: restore bindings lost to tmux restarts or config reloads
+			fc.bindKeys()
 
 		case <-fastTicker.C:
 			if fc.refreshAssigned() {
@@ -298,11 +271,29 @@ func (fc *FeedController) refresh() {
 	if err != nil {
 		return
 	}
+	windows = fc.cleanupPlaceholder(windows)
 	fc.allWindows = windows
 
 	// Assign sessions to windows (filters out stale sessions)
 	fc.stateByWindow = assignSessionsToWindows(windows, sessions)
 
+	fc.applyStaleDetection()
+	fc.updateDisplay()
+}
+
+// refreshWindows is a lightweight alternative to refresh() that skips the
+// expensive DiscoverSessions scan. It re-fetches the tmux window list (one
+// fast tmux command, ~10ms) and reassigns sessions from the cached
+// discoveredSessions. Used after newSession() where we need the updated
+// window list but don't need to rescan the filesystem.
+func (fc *FeedController) refreshWindows() {
+	windows, err := ListWindows(fc.baseSession)
+	if err != nil {
+		return
+	}
+	windows = fc.cleanupPlaceholder(windows)
+	fc.allWindows = windows
+	fc.stateByWindow = assignSessionsToWindows(windows, fc.discoveredSessions)
 	fc.applyStaleDetection()
 	fc.updateDisplay()
 }
@@ -374,11 +365,15 @@ func (fc *FeedController) updateDisplay() {
 		needs := needsAttention[i]
 
 		isDismissed := false
+		isSnoozed := false
 		if s, ok := fc.stateByWindow[i]; ok {
 			isDismissed = fc.dismissed[s.SessionFile]
+			if fc.snooze != nil {
+				isSnoozed = fc.snooze.IsSnoozed(s.SessionFile)
+			}
 		}
 
-		if needs && !isDismissed {
+		if needs && !isDismissed && !isSnoozed {
 			fc.attentionQueue = append(fc.attentionQueue, i)
 			if !hasAsterisk {
 				RenameWindow(fc.baseSession, w.Index, w.Name+"*")
@@ -394,21 +389,6 @@ func (fc *FeedController) updateDisplay() {
 	}
 	if len(fc.allWindows) == 0 {
 		fc.cursor = 0
-	}
-
-	// Auto-advance: if current window left the attention queue, jump to next
-	if len(fc.attentionQueue) > 0 {
-		inQueue := false
-		for _, wi := range fc.attentionQueue {
-			if wi == fc.cursor {
-				inQueue = true
-				break
-			}
-		}
-		if !inQueue {
-			fc.cursor = fc.attentionQueue[0]
-			fc.focusCurrent()
-		}
 	}
 
 	fc.renderSessionLine()
@@ -489,6 +469,43 @@ func (fc *FeedController) dismissAndAdvance() {
 		fc.dismissed[s.SessionFile] = true
 	}
 
+	fc.removeFromQueueAndAdvance()
+}
+
+func (fc *FeedController) snoozeAndAdvance(durStr string) {
+	if fc.snooze == nil {
+		return
+	}
+
+	// Get current window's session file
+	s, ok := fc.stateByWindow[fc.cursor]
+	if !ok || s.SessionFile == "" {
+		return
+	}
+
+	// Parse duration
+	var until time.Time
+	switch durStr {
+	case "tomorrow":
+		// Next day at 9am local time
+		now := time.Now()
+		tomorrow := now.AddDate(0, 0, 1)
+		until = time.Date(tomorrow.Year(), tomorrow.Month(), tomorrow.Day(), 9, 0, 0, 0, now.Location())
+	default:
+		dur, err := time.ParseDuration(durStr)
+		if err != nil {
+			return
+		}
+		until = time.Now().Add(dur)
+	}
+
+	fc.snooze.Snooze(s.SessionFile, until)
+	fc.removeFromQueueAndAdvance()
+}
+
+// removeFromQueueAndAdvance removes the current cursor position from the
+// attention queue and advances to the next item. Used by dismiss and snooze.
+func (fc *FeedController) removeFromQueueAndAdvance() {
 	curIdx := -1
 	for i, wi := range fc.attentionQueue {
 		if wi == fc.cursor {
@@ -498,9 +515,7 @@ func (fc *FeedController) dismissAndAdvance() {
 	}
 
 	if curIdx != -1 {
-		// Remove current from attention queue
 		fc.attentionQueue = append(fc.attentionQueue[:curIdx], fc.attentionQueue[curIdx+1:]...)
-		// Advance to next item in queue
 		if len(fc.attentionQueue) > 0 {
 			nextIdx := curIdx
 			if nextIdx >= len(fc.attentionQueue) {
@@ -509,7 +524,6 @@ func (fc *FeedController) dismissAndAdvance() {
 			fc.cursor = fc.attentionQueue[nextIdx]
 		}
 	} else if len(fc.attentionQueue) > 0 {
-		// Cursor wasn't in queue -- jump to first item
 		fc.cursor = fc.attentionQueue[0]
 	}
 
@@ -525,25 +539,19 @@ func (fc *FeedController) newSession(dir string) {
 	}
 	windowName := filepath.Base(absDir)
 
-	if fc.dirCommand != "" {
-		newDir, err := config.RunDirCommand(fc.dirCommand, absDir)
-		if err != nil {
-			exec.Command("tmux", "display-message", fmt.Sprintf("dir_command failed: %v", err)).Run()
-			return
-		}
-		absDir = newDir
-	} else {
-		if gitRoot, err := exec.Command("git", "-C", absDir, "rev-parse", "--show-toplevel").Output(); err == nil {
-			absDir = strings.TrimSpace(string(gitRoot))
-		}
+	resolved, err := config.ResolveDir(fc.dirCommand, absDir)
+	if err != nil {
+		exec.Command("tmux", "display-message", fmt.Sprintf("dir_command failed: %v", err)).Run()
+		return
 	}
+	absDir = resolved
 
 	idx, err := NewWindow(fc.baseSession, windowName, absDir, fc.command)
 	if err != nil {
 		return
 	}
 
-	fc.refresh()
+	fc.refreshWindows()
 
 	// Focus the newly created window
 	for i, w := range fc.allWindows {
@@ -562,16 +570,38 @@ func (fc *FeedController) killCurrent() {
 	}
 	w := fc.allWindows[fc.cursor]
 
-	// Clear any dismissed state for this window's session
+	// Clear any dismissed/snoozed state for this window's session
 	if s, ok := fc.stateByWindow[fc.cursor]; ok && s.SessionFile != "" {
 		delete(fc.dismissed, s.SessionFile)
+		if fc.snooze != nil {
+			fc.snooze.Unsnooze(s.SessionFile)
+		}
 	}
 
 	// Kill the tmux window (sends SIGHUP to claude, closing it)
 	KillWindow(fc.baseSession, w.Index)
 
-	// Refresh to pick up the removed window
-	fc.refresh()
+	// In-memory update: splice the killed window out of allWindows and
+	// rebuild stateByWindow with shifted indices. This avoids the expensive
+	// DiscoverSessions scan — the 5s periodic refresh reconciles with truth.
+	killedIdx := fc.cursor
+	fc.allWindows = append(fc.allWindows[:killedIdx], fc.allWindows[killedIdx+1:]...)
+
+	newState := make(map[int]claude.Session, len(fc.stateByWindow))
+	for i, s := range fc.stateByWindow {
+		if i == killedIdx {
+			continue
+		}
+		if i > killedIdx {
+			newState[i-1] = s
+		} else {
+			newState[i] = s
+		}
+	}
+	fc.stateByWindow = newState
+
+	fc.applyStaleDetection()
+	fc.updateDisplay()
 	fc.updateStatusBar()
 }
 
@@ -600,14 +630,38 @@ func (fc *FeedController) updateStatusBar() {
 }
 
 func (fc *FeedController) bindKeys() {
-	fifo := fc.fifoPath
-	BindKey("M-]", fmt.Sprintf("echo next > %s", fifo))
-	BindKey("M-[", fmt.Sprintf("echo prev > %s", fifo))
-	BindKey("M-Enter", fmt.Sprintf("echo dismiss > %s", fifo))
-	BindKey("C-q", fmt.Sprintf("echo quit > %s", fifo))
-	BindKey("M-a", fmt.Sprintf("echo toggleall > %s", fifo))
-	BindKey("M-d", fmt.Sprintf("echo kill > %s", fifo))
+	fifoTemplate := "/tmp/#{session_name}.fifo"
+	guard := fmt.Sprintf("[ -p %s ]", fifoTemplate)
 
+	for _, b := range []struct{ key, cmd string }{
+		{"M-]", "next"},
+		{"M-[", "prev"},
+		{"M-Enter", "dismiss"},
+		{"C-q", "quit"},
+		{"M-a", "toggleall"},
+		{"M-d", "kill"},
+	} {
+		cmd := fmt.Sprintf("%s && echo %s > %s || true", guard, b.cmd, fifoTemplate)
+		if err := BindKey(b.key, cmd); err != nil {
+			log.Printf("att: bind %s failed: %v", b.key, err)
+		}
+	}
+
+	snoozeCmd := func(dur string) string {
+		return fmt.Sprintf("run-shell '%s && echo snooze %s > %s || true'", guard, dur, fifoTemplate)
+	}
+	if err := BindKeyDirect("M-z", "display-menu", "-T", "Snooze",
+		"15 minutes", "1", snoozeCmd("15m"),
+		"30 minutes", "2", snoozeCmd("30m"),
+		"1 hour", "3", snoozeCmd("1h"),
+		"2 hours", "4", snoozeCmd("2h"),
+		"4 hours", "5", snoozeCmd("4h"),
+		"Tomorrow", "6", snoozeCmd("tomorrow"),
+	); err != nil {
+		log.Printf("att: bind M-z failed: %v", err)
+	}
+
+	newCmd := fmt.Sprintf("run-shell '%s && echo new %%%%1 > %s || true'", guard, fifoTemplate)
 	if len(fc.projects) > 0 {
 		menuArgs := []string{"display-menu", "-T", "New session"}
 		for i, p := range fc.projects {
@@ -616,30 +670,37 @@ func (fc *FeedController) bindKeys() {
 			if i < 9 {
 				shortcut = strconv.Itoa(i + 1)
 			}
-			cmd := fmt.Sprintf("run-shell 'echo new %s > %s'", p, fifo)
+			cmd := fmt.Sprintf("run-shell '%s && echo new %s > %s || true'", guard, p, fifoTemplate)
 			menuArgs = append(menuArgs, name, shortcut, cmd)
 		}
 		// Separator then free-text fallback
 		menuArgs = append(menuArgs, "")
-		customCmd := fmt.Sprintf(`command-prompt -I #{pane_current_path} -p "New session:" "run-shell 'echo new %%1 > %s'"`, fifo)
+		customCmd := fmt.Sprintf(`command-prompt -I #{pane_current_path} -p "New session:" "%s"`, newCmd)
 		menuArgs = append(menuArgs, "Custom...", "c", customCmd)
-		BindKeyDirect("M-n", menuArgs...)
+		if err := BindKeyDirect("M-n", menuArgs...); err != nil {
+			log.Printf("att: bind M-n failed: %v", err)
+		}
 	} else {
-		BindKeyDirect("M-n",
+		if err := BindKeyDirect("M-n",
 			"command-prompt", "-I", "#{pane_current_path}", "-p", "New session:",
-			fmt.Sprintf("run-shell 'echo new %%1 > %s'", fifo),
-		)
+			fmt.Sprintf("run-shell '%s && echo new %%%%1 > %s || true'", guard, fifoTemplate),
+		); err != nil {
+			log.Printf("att: bind M-n failed: %v", err)
+		}
 	}
 }
 
 func (fc *FeedController) unbindKeys() {
-	UnbindKey("M-]")
-	UnbindKey("M-[")
-	UnbindKey("M-Enter")
-	UnbindKey("C-q")
-	UnbindKey("M-a")
-	UnbindKey("M-d")
-	UnbindKey("M-n")
+	// Check if other feed sessions are still running — if so, keep bindings
+	out, _ := exec.Command("tmux", "list-sessions", "-F", "#{session_name}").Output()
+	for _, name := range strings.Split(strings.TrimSpace(string(out)), "\n") {
+		if strings.HasPrefix(name, "att-feed-") && name != fc.sessionName {
+			return // other feed still running, keep bindings
+		}
+	}
+	for _, key := range []string{"M-]", "M-[", "M-Enter", "C-q", "M-a", "M-d", "M-z", "M-n"} {
+		UnbindKey(key)
+	}
 }
 
 func (fc *FeedController) restoreStatus() {
@@ -660,232 +721,4 @@ func (fc *FeedController) restoreStatus() {
 	exec.Command("tmux", "set-option", "-t", sess, "-u", "window-status-separator").Run()
 }
 
-func (fc *FeedController) getClientWidth() int {
-	out, err := exec.Command("tmux", "display-message", "-t", fc.sessionName, "-p", "#{client_width}").Output()
-	if err != nil {
-		return 120
-	}
-	w, err := strconv.Atoi(strings.TrimSpace(string(out)))
-	if err != nil || w <= 0 {
-		return 120
-	}
-	return w
-}
 
-func (fc *FeedController) renderSessionLine() {
-	if fc.showAll {
-		// Show every window with its session state
-		var sessions []claude.Session
-		for i := range fc.allWindows {
-			sessions = append(sessions, fc.stateByWindow[i])
-		}
-		line := formatSessionLine(fc.allWindows, sessions, fc.cursor, fc.getClientWidth())
-		SetStatusLeftForSession(fc.sessionName, line)
-		return
-	}
-
-	if len(fc.attentionQueue) == 0 && !fc.showAll {
-		msg := fmt.Sprintf("All clear \u2014 %d sessions working", len(fc.allWindows))
-		SetStatusLeftForSession(fc.sessionName, "#[align=centre]"+msg)
-		return
-	}
-
-	// Build filtered window list from attention queue
-	var filtered []WindowInfo
-	var filteredSessions []claude.Session
-	activeIdx := -1
-	for i, wi := range fc.attentionQueue {
-		filtered = append(filtered, fc.allWindows[wi])
-		filteredSessions = append(filteredSessions, fc.stateByWindow[wi])
-		if wi == fc.cursor {
-			activeIdx = i
-		}
-	}
-
-	line := formatSessionLine(filtered, filteredSessions, activeIdx, fc.getClientWidth())
-	SetStatusLeftForSession(fc.sessionName, line)
-}
-
-// assignSessionsToWindows maps each window index to a distinct session.
-// When multiple windows share the same workspace path, each window gets
-// one of the most recently modified sessions at that path. Old dead sessions
-// (from Claude processes that exited hours ago) are excluded.
-func assignSessionsToWindows(windows []WindowInfo, sessions []claude.Session) map[int]claude.Session {
-	// Count how many windows per path
-	windowsPerPath := make(map[string]int)
-	for _, w := range windows {
-		windowsPerPath[w.Path]++
-	}
-
-	// Group sessions by workspace path, sorted by mod time descending (most recent first)
-	byPath := make(map[string][]claude.Session)
-	for _, s := range sessions {
-		byPath[s.WorkspacePath] = append(byPath[s.WorkspacePath], s)
-	}
-	for path := range byPath {
-		group := byPath[path]
-		sort.Slice(group, func(i, j int) bool {
-			return group[i].ModTime.After(group[j].ModTime)
-		})
-		// Keep only as many sessions as there are windows at this path.
-		// Old sessions from dead Claude processes are irrelevant.
-		n := windowsPerPath[path]
-		if n > 0 && len(group) > n {
-			group = group[:n]
-		}
-		byPath[path] = group
-	}
-
-	// Assign one session per window, consuming from each path's group
-	result := make(map[int]claude.Session)
-	used := make(map[string]int) // path -> next index to consume
-	for i, w := range windows {
-		group := byPath[w.Path]
-		idx := used[w.Path]
-		if idx < len(group) {
-			result[i] = group[idx]
-			used[w.Path] = idx + 1
-		}
-	}
-	return result
-}
-
-// sessionEntryText returns the display text for a window's session entry.
-func sessionEntryText(w WindowInfo, s claude.Session) string {
-	name := strings.TrimSuffix(w.Name, "*")
-	if len(name) > 12 {
-		name = name[:12]
-	}
-
-	var stateStr string
-	switch s.State {
-	case claude.StateWorking:
-		stateStr = "Work"
-	case claude.StateIdle:
-		stateStr = "Idle"
-	case claude.StateAsking:
-		stateStr = "Ask"
-	case claude.StatePlanMode:
-		stateStr = "Plan"
-	case claude.StateToolPermission:
-		stateStr = "Perm"
-	default:
-		stateStr = "?"
-	}
-
-	if s.NeedsAttention() {
-		stateStr += "*"
-	}
-
-	return name + " " + stateStr
-}
-
-// formatSessionLine builds the tmux status-format string for the session bar.
-// One entry per window, highlighted by activeIdx (cursor position).
-func formatSessionLine(windows []WindowInfo, sessions []claude.Session, activeIdx int, width int) string {
-	type entry struct {
-		text string
-		len  int
-	}
-
-	var entries []entry
-	for i, w := range windows {
-		var s claude.Session
-		if i < len(sessions) {
-			s = sessions[i]
-		}
-		text := sessionEntryText(w, s)
-		entries = append(entries, entry{text: text, len: len(text)})
-	}
-
-	if activeIdx < 0 || activeIdx >= len(entries) {
-		activeIdx = -1
-	}
-
-	sep := " | "
-	sepLen := len(sep)
-
-	// Calculate total visible width
-	totalLen := 0
-	for i, e := range entries {
-		if i > 0 {
-			totalLen += sepLen
-		}
-		totalLen += e.len
-	}
-
-	// Build the line with highlighting, handling overflow
-	if totalLen <= width {
-		var parts []string
-		for i, e := range entries {
-			if i == activeIdx {
-				parts = append(parts, "#[reverse]"+e.text+"#[noreverse]")
-			} else {
-				parts = append(parts, e.text)
-			}
-		}
-		return "#[align=centre]" + strings.Join(parts, sep)
-	}
-
-	// Overflow: center on active entry, show arrows for clipped sides
-	arrowLeft := "\u25c0 "  // "< "
-	arrowRight := " \u25b6" // " >"
-	arrowLen := 2
-
-	available := width - arrowLen*2
-	if available < 10 {
-		available = width
-	}
-
-	start, end := activeIdx, activeIdx
-	if activeIdx < 0 {
-		start, end = 0, 0
-	}
-	used := entries[start].len
-
-	for {
-		expanded := false
-		if end+1 < len(entries) {
-			need := sepLen + entries[end+1].len
-			if used+need <= available {
-				end++
-				used += need
-				expanded = true
-			}
-		}
-		if start-1 >= 0 {
-			need := sepLen + entries[start-1].len
-			if used+need <= available {
-				start--
-				used += need
-				expanded = true
-			}
-		}
-		if !expanded {
-			break
-		}
-	}
-
-	var parts []string
-	hasLeft := start > 0
-	hasRight := end < len(entries)-1
-
-	if hasLeft {
-		parts = append(parts, arrowLeft)
-	}
-	for i := start; i <= end; i++ {
-		if i > start {
-			parts = append(parts, sep)
-		}
-		if i == activeIdx {
-			parts = append(parts, "#[reverse]"+entries[i].text+"#[noreverse]")
-		} else {
-			parts = append(parts, entries[i].text)
-		}
-	}
-	if hasRight {
-		parts = append(parts, arrowRight)
-	}
-
-	return "#[align=centre]" + strings.Join(parts, "")
-}
