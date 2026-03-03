@@ -499,8 +499,8 @@ func TestSnoozedVisibleInShowAll(t *testing.T) {
 
 	line := formatSessionLine(windows, sessions, attn, 1, 200, snoozedFlags, nil)
 
-	if !strings.Contains(line, "Snz") {
-		t.Errorf("expected Snz label for snoozed session, got: %s", line)
+	if !strings.Contains(line, "🕐") {
+		t.Errorf("expected 🕐 label for snoozed session, got: %s", line)
 	}
 }
 
@@ -1355,11 +1355,11 @@ func TestPinnedAndAttentionShowsBothFlags(t *testing.T) {
 	if !strings.Contains(text, "Attn*") {
 		t.Errorf("expected Attn* flag, got: %s", text)
 	}
-	if !strings.Contains(text, "Pin") {
-		t.Errorf("expected Pin flag, got: %s", text)
+	if !strings.Contains(text, "📌") {
+		t.Errorf("expected 📌 flag, got: %s", text)
 	}
-	if text != "myproject Attn* Pin" {
-		t.Errorf("expected 'myproject Attn* Pin', got: %s", text)
+	if text != "myproject Attn* 📌" {
+		t.Errorf("expected 'myproject Attn* 📌', got: %s", text)
 	}
 }
 
@@ -1368,14 +1368,14 @@ func TestPinOnlyShowsPinFlag(t *testing.T) {
 	s := claude.Session{}
 
 	text := sessionEntryText(w, s, false, false, true, DefaultPriority)
-	if !strings.Contains(text, "Pin") {
-		t.Errorf("expected Pin flag, got: %s", text)
+	if !strings.Contains(text, "📌") {
+		t.Errorf("expected 📌 flag, got: %s", text)
 	}
 	if strings.Contains(text, "Attn") {
 		t.Errorf("should not show Attn flag, got: %s", text)
 	}
-	if text != "myproject Pin" {
-		t.Errorf("expected 'myproject Pin', got: %s", text)
+	if text != "myproject 📌" {
+		t.Errorf("expected 'myproject 📌', got: %s", text)
 	}
 }
 

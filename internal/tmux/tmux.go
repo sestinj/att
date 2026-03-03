@@ -138,6 +138,15 @@ func SelectWindow(session, windowRef string) error {
 	return exec.Command("tmux", "select-window", "-t", session+":"+windowRef).Run()
 }
 
+// ActiveWindowIndex returns the index of the currently active window in the given session.
+func ActiveWindowIndex(session string) (string, error) {
+	out, err := exec.Command("tmux", "display-message", "-t", session, "-p", "#{window_index}").Output()
+	if err != nil {
+		return "", err
+	}
+	return strings.TrimSpace(string(out)), nil
+}
+
 func RenameWindow(session, idx, name string) error {
 	return exec.Command("tmux", "rename-window", "-t", session+":"+idx, name).Run()
 }

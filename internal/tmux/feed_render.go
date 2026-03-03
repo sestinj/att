@@ -113,16 +113,16 @@ func sessionEntryText(w WindowInfo, s claude.Session, needsAttention bool, snooz
 	}
 	if snoozed {
 		if stateStr == "" {
-			stateStr = "Snz"
+			stateStr = "🕐"
 		} else {
-			stateStr += " Snz"
+			stateStr += " 🕐"
 		}
 	}
 	if pinned {
 		if stateStr == "" {
-			stateStr = "Pin"
+			stateStr = "📌"
 		} else {
-			stateStr += " Pin"
+			stateStr += " 📌"
 		}
 	}
 

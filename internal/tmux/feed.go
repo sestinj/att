@@ -656,7 +656,21 @@ func (fc *FeedController) togglePin() {
 	if fc.pin == nil {
 		return
 	}
-	pos := fc.cursorPos()
+	// Use the actual active tmux window so M-i works on whatever
+	// session the user is viewing, even if it's not in the attention queue.
+	targetIdx := fc.cursor
+	if fc.sessionName != "" {
+		if idx, err := ActiveWindowIndex(fc.sessionName); err == nil && idx != "" {
+			targetIdx = idx
+		}
+	}
+	pos := -1
+	for i, w := range fc.allWindows {
+		if w.Index == targetIdx {
+			pos = i
+			break
+		}
+	}
 	if pos < 0 {
 		return
 	}
@@ -665,6 +679,7 @@ func (fc *FeedController) togglePin() {
 		return
 	}
 	fc.pin.Toggle(s.SessionFile)
+	fc.cursor = targetIdx
 	fc.updateDisplay()
 	fc.updateStatusBar()
 }
