@@ -147,10 +147,10 @@ func TestFormatSessionLine_Overflow_ActiveAtEdges(t *testing.T) {
 func TestFormatSessionLine_TruncatesLongNames(t *testing.T) {
 	windows := makeWindows(
 		[]string{"a-very-long-project-name"},
-		[]string{"/home/user/long"},
+		[]string{"/home/user/a-very-long-project-name"},
 	)
 	sessions := makeSessions(
-		[]string{"/home/user/long"},
+		[]string{"/home/user/a-very-long-project-name"},
 		[]string{"session-long.jsonl"},
 	)
 	line := formatSessionLine(windows, sessions, nil, 0, 200, nil, nil)
@@ -562,13 +562,13 @@ func TestSnoozeAndAdvance(t *testing.T) {
 func TestRenderSessionLine_OnlyAttentionWindows(t *testing.T) {
 	allWindows := makeWindows(
 		[]string{"alpha", "beta", "gamma", "delta"},
-		[]string{"/a", "/b", "/c", "/d"},
+		[]string{"/home/user/alpha", "/home/user/beta", "/home/user/gamma", "/home/user/delta"},
 	)
 	allSessions := []claude.Session{
-		{WorkspacePath: "/a", SessionFile: "a.jsonl"},
-		{WorkspacePath: "/b", SessionFile: "b.jsonl"},
-		{WorkspacePath: "/c", SessionFile: "c.jsonl"},
-		{WorkspacePath: "/d", SessionFile: "d.jsonl"},
+		{WorkspacePath: "/home/user/alpha", SessionFile: "a.jsonl"},
+		{WorkspacePath: "/home/user/beta", SessionFile: "b.jsonl"},
+		{WorkspacePath: "/home/user/gamma", SessionFile: "c.jsonl"},
+		{WorkspacePath: "/home/user/delta", SessionFile: "d.jsonl"},
 	}
 	attention := map[string]bool{"b.jsonl": true, "d.jsonl": true}
 	stateByWindow := assignSessionsToWindows(allWindows, allSessions, attention)
@@ -1283,8 +1283,39 @@ func TestFzfIntegration_CutExtractsWindowIndex(t *testing.T) {
 	}
 }
 
+func TestSessionEntryTextNameFallback(t *testing.T) {
+	// Summary takes priority over everything
+	w := WindowInfo{Index: "0", Name: "stale-name", Path: "/some/project"}
+	s := claude.Session{Summary: "my summary", ProjectName: "project"}
+	text := sessionEntryText(w, s, false, false, false, DefaultPriority)
+	if text != "my summary" {
+		t.Errorf("expected Summary 'my summary', got: %s", text)
+	}
+
+	// ProjectName is next when Summary is empty
+	s = claude.Session{ProjectName: "project"}
+	text = sessionEntryText(w, s, false, false, false, DefaultPriority)
+	if text != "project" {
+		t.Errorf("expected ProjectName 'project', got: %s", text)
+	}
+
+	// Path basename is next when ProjectName is also empty
+	s = claude.Session{}
+	text = sessionEntryText(w, s, false, false, false, DefaultPriority)
+	if text != "project" {
+		t.Errorf("expected filepath.Base(Path) 'project', got: %s", text)
+	}
+
+	// Window Name is last resort when Path is empty
+	w = WindowInfo{Index: "0", Name: "fallback", Path: ""}
+	text = sessionEntryText(w, s, false, false, false, DefaultPriority)
+	if text != "fallback" {
+		t.Errorf("expected window Name 'fallback', got: %s", text)
+	}
+}
+
 func TestSessionEntryTextWithPriority(t *testing.T) {
-	w := WindowInfo{Index: "0", Name: "myproject", Path: "/proj"}
+	w := WindowInfo{Index: "0", Name: "myproject", Path: "/myproject"}
 	s := claude.Session{}
 
 	// Default priority, needs attention
@@ -1357,7 +1388,7 @@ func TestPinnedSessionAppearsInFilteredView(t *testing.T) {
 }
 
 func TestPinnedAndAttentionShowsBothFlags(t *testing.T) {
-	w := WindowInfo{Index: "0", Name: "myproject", Path: "/proj"}
+	w := WindowInfo{Index: "0", Name: "myproject", Path: "/myproject"}
 	s := claude.Session{}
 
 	text := sessionEntryText(w, s, true, false, true, DefaultPriority)
@@ -1373,7 +1404,7 @@ func TestPinnedAndAttentionShowsBothFlags(t *testing.T) {
 }
 
 func TestPinOnlyShowsPinFlag(t *testing.T) {
-	w := WindowInfo{Index: "0", Name: "myproject", Path: "/proj"}
+	w := WindowInfo{Index: "0", Name: "myproject", Path: "/myproject"}
 	s := claude.Session{}
 
 	text := sessionEntryText(w, s, false, false, true, DefaultPriority)

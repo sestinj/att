@@ -3,6 +3,7 @@ package tmux
 import (
 	"fmt"
 	"os/exec"
+	"path/filepath"
 	"strconv"
 	"strings"
 
@@ -100,6 +101,12 @@ func (fc *FeedController) renderSessionLine() {
 // sessionEntryText returns the display text for a window's session entry.
 func sessionEntryText(w WindowInfo, s claude.Session, needsAttention bool, snoozed bool, pinned bool, priority int) string {
 	name := s.Summary
+	if name == "" {
+		name = s.ProjectName
+	}
+	if name == "" && w.Path != "" {
+		name = filepath.Base(w.Path)
+	}
 	if name == "" {
 		name = strings.TrimSuffix(w.Name, "*")
 	}
