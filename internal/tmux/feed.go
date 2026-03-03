@@ -28,6 +28,7 @@ type FeedController struct {
 	priority           *PriorityStore         // P0-P4 priority levels for sessions
 	pin                *PinStore              // pinned sessions stay visible regardless of attention
 	attentionCount     int                    // count of attention-only items (excludes pinned-only)
+	promptCache        map[string]promptCacheEntry // pre-computed prompt text keyed by session file
 	fifoPath           string
 	origStatusRight    string
 	origStatusLeft     string
@@ -315,7 +316,59 @@ func (fc *FeedController) refresh() {
 	// Assign sessions to windows (filters out stale sessions)
 	fc.stateByWindow = assignSessionsToWindows(windows, sessions, fc.attention)
 
+	fc.refreshPromptCache()
 	fc.updateDisplay()
+}
+
+type promptCacheEntry struct {
+	modTime time.Time
+	text    string
+}
+
+// refreshPromptCache extracts user prompts from session JSONL files,
+// skipping sessions whose files haven't changed since the last extraction.
+func (fc *FeedController) refreshPromptCache() {
+	if fc.promptCache == nil {
+		fc.promptCache = make(map[string]promptCacheEntry)
+	}
+
+	active := make(map[string]bool)
+	for _, s := range fc.discoveredSessions {
+		if s.SessionFile == "" {
+			continue
+		}
+		active[s.SessionFile] = true
+
+		if cached, ok := fc.promptCache[s.SessionFile]; ok && !s.ModTime.After(cached.modTime) {
+			continue
+		}
+
+		prompts := claude.ExtractUserPrompts(s.SessionFile, 5)
+		var parts []string
+		for _, p := range prompts {
+			if idx := strings.IndexByte(p, '\n'); idx >= 0 {
+				p = p[:idx]
+			}
+			if len(p) > 80 {
+				p = p[:80]
+			}
+			if p != "" {
+				parts = append(parts, p)
+			}
+		}
+
+		fc.promptCache[s.SessionFile] = promptCacheEntry{
+			modTime: s.ModTime,
+			text:    strings.Join(parts, " | "),
+		}
+	}
+
+	// Clean up entries for sessions no longer discovered
+	for key := range fc.promptCache {
+		if !active[key] {
+			delete(fc.promptCache, key)
+		}
+	}
 }
 
 // refreshWindows is a lightweight alternative to refresh() that skips the
@@ -745,24 +798,10 @@ func (fc *FeedController) findWithFzf(fzfPath string) {
 			prefix = "* "
 		}
 
-		// Extract recent user prompts for search
+		// Look up pre-computed prompt text from cache
 		var promptStr string
-		if s.SessionFile != "" {
-			prompts := claude.ExtractUserPrompts(s.SessionFile, 5)
-			var truncated []string
-			for _, p := range prompts {
-				// First line only, max 80 chars
-				if idx := strings.IndexByte(p, '\n'); idx >= 0 {
-					p = p[:idx]
-				}
-				if len(p) > 80 {
-					p = p[:80]
-				}
-				if p != "" {
-					truncated = append(truncated, p)
-				}
-			}
-			promptStr = strings.Join(truncated, " | ")
+		if entry, ok := fc.promptCache[s.SessionFile]; ok {
+			promptStr = entry.text
 		}
 
 		lines = append(lines, fmt.Sprintf("%s\t%s%s\t%s", w.Index, prefix, name, promptStr))
