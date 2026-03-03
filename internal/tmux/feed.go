@@ -665,6 +665,52 @@ func fuzzyMatch(pattern, str string) (bool, int) {
 }
 
 func (fc *FeedController) find(query string) {
+	if len(fc.allWindows) == 0 {
+		return
+	}
+
+	// Interactive mode: use fzf in a tmux popup if available
+	if query == "" {
+		if _, err := exec.LookPath("fzf"); err == nil {
+			fc.findWithFzf()
+			return
+		}
+	}
+
+	// Fallback: fuzzy match + display-menu (or direct jump for single match)
+	fc.findWithMenu(query)
+}
+
+func (fc *FeedController) findWithFzf() {
+	// Build session list: index\tname\tpath
+	var lines []string
+	for i, w := range fc.allWindows {
+		s := fc.stateByWindow[i]
+		name := s.Summary
+		if name == "" {
+			name = strings.TrimSuffix(w.Name, "*")
+		}
+		prefix := "  "
+		if fc.attention[s.SessionFile] {
+			prefix = "* "
+		}
+		lines = append(lines, fmt.Sprintf("%s\t%s%s\t%s", w.Index, prefix, name, filepath.Base(w.Path)))
+	}
+
+	tmpFile := fc.fifoPath + ".sessions"
+	if err := os.WriteFile(tmpFile, []byte(strings.Join(lines, "\n")+"\n"), 0600); err != nil {
+		return
+	}
+
+	fzfCmd := fmt.Sprintf(
+		`fzf --prompt='Find: ' --with-nth=2.. --delimiter='\t' --reverse --no-info < '%s' | cut -f1 | while IFS= read -r idx; do echo "goto $idx" > '%s'; done; rm -f '%s'`,
+		tmpFile, fc.fifoPath, tmpFile,
+	)
+
+	exec.Command("tmux", "display-popup", "-t", fc.sessionName, "-w", "60%", "-h", "50%", "-E", fzfCmd).Run()
+}
+
+func (fc *FeedController) findWithMenu(query string) {
 	type result struct {
 		windowIdx int
 		name      string
@@ -680,7 +726,6 @@ func (fc *FeedController) find(query string) {
 		}
 
 		if query == "" {
-			// Empty query: show all sessions
 			results = append(results, result{windowIdx: i, name: name, score: i})
 			continue
 		}
@@ -712,7 +757,6 @@ func (fc *FeedController) find(query string) {
 		return
 	}
 
-	// Cap at 10 results for the menu
 	if len(results) > 10 {
 		results = results[:10]
 	}
@@ -876,11 +920,9 @@ func (fc *FeedController) bindKeys() {
 		log.Printf("att: bind M-p failed: %v", err)
 	}
 
-	// M-f: fuzzy find sessions
-	if err := BindKeyDirect("M-f",
-		"command-prompt", "-p", "Find:",
-		fmt.Sprintf("run-shell '%s && echo find %%%%1 > %s || true'", guard, fifoTemplate),
-	); err != nil {
+	// M-f: fuzzy find sessions (sends "find" to FIFO, handler opens fzf popup or menu)
+	findCmd := fmt.Sprintf("%s && echo find > %s || true", guard, fifoTemplate)
+	if err := BindKey("M-f", findCmd); err != nil {
 		log.Printf("att: bind M-f failed: %v", err)
 	}
 

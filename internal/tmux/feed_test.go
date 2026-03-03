@@ -853,7 +853,7 @@ func TestFuzzyMatch_SubstringBeatsGappy(t *testing.T) {
 	}
 }
 
-func TestFind_SingleResult_JumpsDirect(t *testing.T) {
+func TestFindWithMenu_SingleResult_JumpsDirect(t *testing.T) {
 	fc := &FeedController{
 		allWindows: makeWindows(
 			[]string{"alpha", "beta", "gamma"},
@@ -869,13 +869,13 @@ func TestFind_SingleResult_JumpsDirect(t *testing.T) {
 		attention: make(map[string]bool),
 	}
 
-	fc.find("logging")
+	fc.findWithMenu("logging")
 	if fc.cursor != "1" {
 		t.Errorf("expected cursor to jump to window 1 (logging), got %s", fc.cursor)
 	}
 }
 
-func TestFind_NoResults(t *testing.T) {
+func TestFindWithMenu_NoResults(t *testing.T) {
 	fc := &FeedController{
 		allWindows: makeWindows(
 			[]string{"alpha", "beta"},
@@ -890,7 +890,7 @@ func TestFind_NoResults(t *testing.T) {
 		attention: make(map[string]bool),
 	}
 
-	fc.find("zzzzz")
+	fc.findWithMenu("zzzzz")
 	// cursor should not change
 	if fc.cursor != "0" {
 		t.Errorf("expected cursor unchanged, got %s", fc.cursor)
