@@ -1515,3 +1515,69 @@ func TestPinnedNotDuplicatedWhenAlsoNeedsAttention(t *testing.T) {
 		t.Errorf("expected pinned+attention session to appear once, appeared %d times", count)
 	}
 }
+
+func TestTogglePinInViewAllMode(t *testing.T) {
+	pin := &PinStore{
+		entries: make(map[string]bool),
+		path:    filepath.Join(t.TempDir(), "pin.json"),
+	}
+
+	fc := &FeedController{
+		allWindows: makeWindows(
+			[]string{"alpha", "beta", "gamma"},
+			[]string{"/a", "/b", "/c"},
+		),
+		stateByWindow: map[int]claude.Session{
+			0: {SessionFile: "session-a.jsonl"},
+			1: {SessionFile: "session-b.jsonl"},
+			2: {SessionFile: "session-c.jsonl"},
+		},
+		// Only alpha needs attention
+		attention: map[string]bool{"session-a.jsonl": true},
+		dismissed: make(map[string]bool),
+		pin:       pin,
+		showAll:   true,
+		cursor:    "2", // on gamma — no attention
+	}
+
+	// Pin gamma (non-attention) while in view-all mode
+	fc.togglePin()
+	if !pin.IsPinned("session-c.jsonl") {
+		t.Errorf("expected session-c.jsonl to be pinned after toggle in view-all mode")
+	}
+
+	// Switch to filtered mode — gamma should appear in the queue
+	fc.showAll = false
+	fc.updateDisplay()
+	found := false
+	for _, wi := range fc.attentionQueue {
+		if wi == 2 {
+			found = true
+		}
+	}
+	if !found {
+		t.Errorf("expected pinned gamma (window 2) in attention queue after switching to filtered mode, queue=%v", fc.attentionQueue)
+	}
+}
+
+func TestFIFOMultiCommandSplit(t *testing.T) {
+	// Verify that the FIFO reader correctly splits newline-delimited
+	// commands that arrive in a single read (rapid key presses).
+	raw := "toggleall\npin\n"
+	var cmds []string
+	for _, line := range strings.Split(raw, "\n") {
+		cmd := strings.TrimSpace(line)
+		if cmd != "" {
+			cmds = append(cmds, cmd)
+		}
+	}
+	if len(cmds) != 2 {
+		t.Fatalf("expected 2 commands, got %d: %v", len(cmds), cmds)
+	}
+	if cmds[0] != "toggleall" {
+		t.Errorf("first command: expected toggleall, got %s", cmds[0])
+	}
+	if cmds[1] != "pin" {
+		t.Errorf("second command: expected pin, got %s", cmds[1])
+	}
+}

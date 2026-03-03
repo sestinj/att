@@ -177,9 +177,13 @@ func (fc *FeedController) Run() error {
 			if err != nil {
 				return
 			}
-			cmd := strings.TrimSpace(string(buf[:n]))
-			if cmd != "" {
-				cmdCh <- cmd
+			// A single read may contain multiple newline-delimited commands
+			// (e.g. rapid M-a then M-i writes "toggleall\npin\n" in one read).
+			for _, line := range strings.Split(string(buf[:n]), "\n") {
+				cmd := strings.TrimSpace(line)
+				if cmd != "" {
+					cmdCh <- cmd
+				}
 			}
 		}
 	}()
