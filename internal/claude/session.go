@@ -213,8 +213,8 @@ func ExtractUserPrompts(sessionFile string, limit int) []string {
 		}
 	}
 
-	headPrompts := scanUserPrompts(headData)
-	tailPrompts := scanUserPrompts(tailData)
+	headPrompts := scanMessageTexts(headData)
+	tailPrompts := scanMessageTexts(tailData)
 
 	// Deduplicate: head prompts first, then tail
 	seen := make(map[string]bool)
@@ -242,15 +242,18 @@ func ExtractUserPrompts(sessionFile string, limit int) []string {
 	return prompts
 }
 
-func scanUserPrompts(data []byte) []string {
-	var prompts []string
+func scanMessageTexts(data []byte) []string {
+	var texts []string
 	for _, line := range bytes.Split(data, []byte{'\n'}) {
 		if len(line) == 0 {
 			continue
 		}
-		// Fast pre-filter before JSON parsing
-		if !bytes.Contains(line, []byte(`"type":"user"`)) &&
-			!bytes.Contains(line, []byte(`"type": "user"`)) {
+		// Fast pre-filter: only parse user or assistant entries
+		isUser := bytes.Contains(line, []byte(`"type":"user"`)) ||
+			bytes.Contains(line, []byte(`"type": "user"`))
+		isAssistant := bytes.Contains(line, []byte(`"type":"assistant"`)) ||
+			bytes.Contains(line, []byte(`"type": "assistant"`))
+		if !isUser && !isAssistant {
 			continue
 		}
 
@@ -260,16 +263,19 @@ func scanUserPrompts(data []byte) []string {
 				Content json.RawMessage `json:"content"`
 			} `json:"message"`
 		}
-		if json.Unmarshal(line, &entry) != nil || entry.Type != "user" {
+		if json.Unmarshal(line, &entry) != nil {
+			continue
+		}
+		if entry.Type != "user" && entry.Type != "assistant" {
 			continue
 		}
 
 		text := extractPromptText(entry.Message.Content)
 		if text != "" && isRealPrompt(text) {
-			prompts = append(prompts, text)
+			texts = append(texts, text)
 		}
 	}
-	return prompts
+	return texts
 }
 
 // isRealPrompt filters out system/interrupt messages that aren't actual user prompts.

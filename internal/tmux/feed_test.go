@@ -1111,20 +1111,21 @@ func TestFzfIntegration_SearchByNameAndPrompt(t *testing.T) {
 	os.WriteFile(s1File, []byte(
 		`{"type":"user","cwd":"/proj1","sessionId":"s1"}`+"\n"+
 			`{"type":"user","message":{"role":"user","content":"fix the authentication bug in the login flow"}}`+"\n"+
-			`{"type":"assistant","message":{"content":[{"type":"text"}]}}`+"\n"+
+			`{"type":"assistant","message":{"role":"assistant","content":[{"type":"text","text":"I'll fix the token validation logic in the middleware."}]}}`+"\n"+
 			`{"type":"user","message":{"role":"user","content":"also add session expiry handling"}}`+"\n",
 	), 0644)
 
 	os.WriteFile(s2File, []byte(
 		`{"type":"user","cwd":"/proj2","sessionId":"s2"}`+"\n"+
 			`{"type":"user","message":{"role":"user","content":"implement telemetry dashboard"}}`+"\n"+
-			`{"type":"assistant","message":{"content":[{"type":"text"}]}}`+"\n"+
+			`{"type":"assistant","message":{"role":"assistant","content":[{"type":"text","text":"I'll create a React component with Recharts for the metrics visualization."}]}}`+"\n"+
 			`{"type":"user","message":{"role":"user","content":"add error rate tracking chart"}}`+"\n",
 	), 0644)
 
 	os.WriteFile(s3File, []byte(
 		`{"type":"user","cwd":"/proj3","sessionId":"s3"}`+"\n"+
-			`{"type":"user","message":{"role":"user","content":"refactor database connection pooling"}}`+"\n",
+			`{"type":"user","message":{"role":"user","content":"refactor database connection pooling"}}`+"\n"+
+			`{"type":"assistant","message":{"role":"assistant","content":[{"type":"text","text":"I'll refactor the pgxpool configuration to use bounded concurrency."}]}}`+"\n",
 	), 0644)
 
 	fc := &FeedController{
@@ -1166,13 +1167,21 @@ func TestFzfIntegration_SearchByNameAndPrompt(t *testing.T) {
 		{"Telemetry", []string{"1"}, "name match on 'Telemetry'"},
 		{"DB refactor", []string{"2"}, "name match on 'DB refactor'"},
 
-		// Search by prompt content
-		{"login flow", []string{"0"}, "prompt match on 'login flow'"},
-		{"session expiry", []string{"0"}, "prompt match on 'session expiry'"},
-		{"telemetry dashboard", []string{"1"}, "prompt match on 'telemetry dashboard'"},
-		{"error rate", []string{"1"}, "prompt match on 'error rate'"},
-		{"database connection", []string{"2"}, "prompt match on 'database connection'"},
-		{"pooling", []string{"2"}, "prompt match on 'pooling'"},
+		// Search by user prompt content
+		{"login flow", []string{"0"}, "user prompt match on 'login flow'"},
+		{"session expiry", []string{"0"}, "user prompt match on 'session expiry'"},
+		{"telemetry dashboard", []string{"1"}, "user prompt match on 'telemetry dashboard'"},
+		{"error rate", []string{"1"}, "user prompt match on 'error rate'"},
+		{"database connection", []string{"2"}, "user prompt match on 'database connection'"},
+		{"pooling", []string{"2"}, "user prompt match on 'pooling'"},
+
+		// Search by assistant message text
+		{"token validation", []string{"0"}, "assistant text match on 'token validation'"},
+		{"middleware", []string{"0"}, "assistant text match on 'middleware'"},
+		{"Recharts", []string{"1"}, "assistant text match on 'Recharts'"},
+		{"metrics visualization", []string{"1"}, "assistant text match on 'metrics visualization'"},
+		{"pgxpool", []string{"2"}, "assistant text match on 'pgxpool'"},
+		{"bounded concurrency", []string{"2"}, "assistant text match on 'bounded concurrency'"},
 
 		// No match
 		{"zzzznonexistent", nil, "no match expected"},

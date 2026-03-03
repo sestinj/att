@@ -480,6 +480,14 @@ func userEntryArray(text string) string {
 	return fmt.Sprintf(`{"type":"user","message":{"role":"user","content":[{"type":"text","text":"%s"}]}}`, text)
 }
 
+func assistantEntry(text string) string {
+	return fmt.Sprintf(`{"type":"assistant","message":{"role":"assistant","content":[{"type":"text","text":"%s"}]}}`, text)
+}
+
+func assistantToolUse(toolName string) string {
+	return fmt.Sprintf(`{"type":"assistant","message":{"role":"assistant","content":[{"type":"tool_use","name":"%s","id":"x","input":{}}]}}`, toolName)
+}
+
 func toolResultEntry() string {
 	return `{"type":"user","message":{"role":"user","content":[{"tool_use_id":"x","type":"tool_result","content":"ok"}]}}`
 }
@@ -522,6 +530,77 @@ func TestExtractUserPrompts_ArrayContent(t *testing.T) {
 	}
 	if prompts[0] != "add a search feature" {
 		t.Errorf("expected 'add a search feature', got %q", prompts[0])
+	}
+}
+
+func TestExtractUserPrompts_IncludesAssistantText(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "session.jsonl")
+	writeJSONL(t, path,
+		metadataEntry("/proj"),
+		userEntry("fix the authentication bug"),
+		assistantEntry("I'll fix the authentication bug in the login flow by updating the token validation logic."),
+		assistantToolUse("Read"),
+		toolResultEntry(),
+		assistantEntry("The issue is in the validateToken function. Let me fix it."),
+		userEntry("also add rate limiting"),
+		assistantEntry("I'll add rate limiting to the API endpoints using a token bucket algorithm."),
+	)
+
+	prompts := ExtractUserPrompts(path, 10)
+
+	// Should include both user prompts and assistant text
+	hasUserAuth := false
+	hasAssistantAuth := false
+	hasUserRate := false
+	hasAssistantRate := false
+	for _, p := range prompts {
+		if strings.Contains(p, "fix the authentication bug") && !strings.Contains(p, "login flow") {
+			hasUserAuth = true
+		}
+		if strings.Contains(p, "token validation logic") {
+			hasAssistantAuth = true
+		}
+		if strings.Contains(p, "also add rate limiting") {
+			hasUserRate = true
+		}
+		if strings.Contains(p, "token bucket algorithm") {
+			hasAssistantRate = true
+		}
+	}
+
+	if !hasUserAuth {
+		t.Errorf("missing user prompt about auth bug; got: %v", prompts)
+	}
+	if !hasAssistantAuth {
+		t.Errorf("missing assistant text about token validation; got: %v", prompts)
+	}
+	if !hasUserRate {
+		t.Errorf("missing user prompt about rate limiting; got: %v", prompts)
+	}
+	if !hasAssistantRate {
+		t.Errorf("missing assistant text about token bucket; got: %v", prompts)
+	}
+}
+
+func TestExtractUserPrompts_AssistantToolUseOnly_Skipped(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "session.jsonl")
+	writeJSONL(t, path,
+		metadataEntry("/proj"),
+		userEntry("fix the bug"),
+		// Assistant message with only tool_use, no text
+		assistantToolUse("Bash"),
+		toolResultEntry(),
+	)
+
+	prompts := ExtractUserPrompts(path, 10)
+	// Should only have the user prompt, not the tool-only assistant message
+	if len(prompts) != 1 {
+		t.Fatalf("expected 1 prompt, got %d: %v", len(prompts), prompts)
+	}
+	if prompts[0] != "fix the bug" {
+		t.Errorf("expected 'fix the bug', got %q", prompts[0])
 	}
 }
 

@@ -343,7 +343,7 @@ func (fc *FeedController) refreshPromptCache() {
 			continue
 		}
 
-		prompts := claude.ExtractUserPrompts(s.SessionFile, 5)
+		prompts := claude.ExtractUserPrompts(s.SessionFile, 8)
 		var parts []string
 		for _, p := range prompts {
 			if idx := strings.IndexByte(p, '\n'); idx >= 0 {
