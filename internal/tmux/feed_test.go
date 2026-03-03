@@ -2,6 +2,7 @@ package tmux
 
 import (
 	"fmt"
+	"os"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -894,6 +895,79 @@ func TestFindWithMenu_NoResults(t *testing.T) {
 	// cursor should not change
 	if fc.cursor != "0" {
 		t.Errorf("expected cursor unchanged, got %s", fc.cursor)
+	}
+}
+
+func TestPromptCachePopulatedOnRefreshAndUsedByFind(t *testing.T) {
+	// Create a fake JSONL session file with user prompts
+	dir := t.TempDir()
+	sessionFile := filepath.Join(dir, "session.jsonl")
+	os.WriteFile(sessionFile, []byte(
+		`{"type":"user","cwd":"/proj","sessionId":"test"}`+"\n"+
+			`{"type":"user","message":{"role":"user","content":"fix the login bug"}}`+"\n"+
+			`{"type":"assistant","message":{"content":[{"type":"text"}]}}`+"\n"+
+			`{"type":"user","message":{"role":"user","content":"now add error handling"}}`+"\n",
+	), 0644)
+
+	fc := &FeedController{
+		allWindows: makeWindows(
+			[]string{"myproject"},
+			[]string{"/proj"},
+		),
+		stateByWindow: map[int]claude.Session{
+			0: {SessionFile: sessionFile, Summary: "myproject"},
+		},
+		discoveredSessions: []claude.Session{
+			{SessionFile: sessionFile, ModTime: time.Now()},
+		},
+		cursor:    "0",
+		dismissed: make(map[string]bool),
+		attention: make(map[string]bool),
+	}
+
+	// Simulate refresh populating the prompt cache
+	fc.refreshPromptCache()
+
+	// Verify cache was populated
+	if fc.promptCache == nil {
+		t.Fatal("expected promptCache to be initialized")
+	}
+	entry, ok := fc.promptCache[sessionFile]
+	if !ok {
+		t.Fatal("expected session file in prompt cache")
+	}
+	if !strings.Contains(entry.text, "fix the login bug") {
+		t.Errorf("expected prompt cache to contain 'fix the login bug', got %q", entry.text)
+	}
+	if !strings.Contains(entry.text, "now add error handling") {
+		t.Errorf("expected prompt cache to contain 'now add error handling', got %q", entry.text)
+	}
+
+	// Simulate what findWithFzf writes to the sessions file
+	var lines []string
+	for i, w := range fc.allWindows {
+		s := fc.stateByWindow[i]
+		name := s.Summary
+		if name == "" {
+			name = strings.TrimSuffix(w.Name, "*")
+		}
+		prefix := "  "
+		var promptStr string
+		if cached, ok := fc.promptCache[s.SessionFile]; ok {
+			promptStr = cached.text
+		}
+		lines = append(lines, fmt.Sprintf("%s\t%s%s\t%s", w.Index, prefix, name, promptStr))
+	}
+
+	sessFileContent := strings.Join(lines, "\n") + "\n"
+
+	// The sessions file must have prompts in field 3 (tab-separated)
+	fields := strings.Split(strings.TrimSpace(sessFileContent), "\t")
+	if len(fields) < 3 {
+		t.Fatalf("expected at least 3 tab-separated fields, got %d: %q", len(fields), sessFileContent)
+	}
+	if !strings.Contains(fields[2], "fix the login bug") {
+		t.Errorf("field 3 should contain prompt text for fzf search, got %q", fields[2])
 	}
 }
 

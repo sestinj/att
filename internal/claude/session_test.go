@@ -469,3 +469,168 @@ func TestCleanupStaleAttention(t *testing.T) {
 		t.Error("expected dead transcript to be cleaned up")
 	}
 }
+
+// --- ExtractUserPrompts tests ---
+
+func userEntry(text string) string {
+	return fmt.Sprintf(`{"type":"user","message":{"role":"user","content":"%s"}}`, text)
+}
+
+func userEntryArray(text string) string {
+	return fmt.Sprintf(`{"type":"user","message":{"role":"user","content":[{"type":"text","text":"%s"}]}}`, text)
+}
+
+func toolResultEntry() string {
+	return `{"type":"user","message":{"role":"user","content":[{"tool_use_id":"x","type":"tool_result","content":"ok"}]}}`
+}
+
+func TestExtractUserPrompts_BasicString(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "session.jsonl")
+	writeJSONL(t, path,
+		metadataEntry("/proj"),
+		userEntry("fix the login bug"),
+		assistantEndTurn(),
+		userEntry("now add tests"),
+		assistantEndTurn(),
+	)
+
+	prompts := ExtractUserPrompts(path, 5)
+	if len(prompts) != 2 {
+		t.Fatalf("expected 2 prompts, got %d: %v", len(prompts), prompts)
+	}
+	if prompts[0] != "fix the login bug" {
+		t.Errorf("expected 'fix the login bug', got %q", prompts[0])
+	}
+	if prompts[1] != "now add tests" {
+		t.Errorf("expected 'now add tests', got %q", prompts[1])
+	}
+}
+
+func TestExtractUserPrompts_ArrayContent(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "session.jsonl")
+	writeJSONL(t, path,
+		metadataEntry("/proj"),
+		userEntryArray("add a search feature"),
+		assistantEndTurn(),
+	)
+
+	prompts := ExtractUserPrompts(path, 5)
+	if len(prompts) != 1 {
+		t.Fatalf("expected 1 prompt, got %d: %v", len(prompts), prompts)
+	}
+	if prompts[0] != "add a search feature" {
+		t.Errorf("expected 'add a search feature', got %q", prompts[0])
+	}
+}
+
+func TestExtractUserPrompts_FiltersJunk(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "session.jsonl")
+	writeJSONL(t, path,
+		metadataEntry("/proj"),
+		userEntry("real prompt here"),
+		assistantEndTurn(),
+		userEntry("[Request interrupted by user for tool use]"),
+		userEntry("[Request interrupted by user]"),
+		toolResultEntry(),
+		`{"type":"user","message":{"role":"user","content":"ok"}}`, // too short (2 chars)
+	)
+
+	prompts := ExtractUserPrompts(path, 10)
+	if len(prompts) != 1 {
+		t.Fatalf("expected 1 prompt (junk filtered), got %d: %v", len(prompts), prompts)
+	}
+	if prompts[0] != "real prompt here" {
+		t.Errorf("expected 'real prompt here', got %q", prompts[0])
+	}
+}
+
+func TestExtractUserPrompts_LargeFile_HeadAndTail(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "session.jsonl")
+
+	f, err := os.Create(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Write first prompt in head
+	f.WriteString(metadataEntry("/proj") + "\n")
+	f.WriteString(userEntry("initial task description") + "\n")
+	f.WriteString(assistantEndTurn() + "\n")
+
+	// Pad with enough filler to push past 8KB + 64KB
+	filler := `{"type":"progress","data":"` + strings.Repeat("x", 200) + `"}` + "\n"
+	for i := 0; i < 500; i++ {
+		f.WriteString(filler)
+	}
+
+	// Write recent prompt in tail
+	f.WriteString(userEntry("recent follow-up question") + "\n")
+	f.WriteString(assistantEndTurn() + "\n")
+	f.Close()
+
+	prompts := ExtractUserPrompts(path, 5)
+	if len(prompts) < 1 {
+		t.Fatalf("expected at least 1 prompt, got %d", len(prompts))
+	}
+
+	hasInitial := false
+	hasRecent := false
+	for _, p := range prompts {
+		if p == "initial task description" {
+			hasInitial = true
+		}
+		if p == "recent follow-up question" {
+			hasRecent = true
+		}
+	}
+
+	// For files small enough to read entirely, both should be found
+	fi, _ := os.Stat(path)
+	if fi.Size() <= 72*1024 {
+		if !hasInitial {
+			t.Error("expected initial prompt from head")
+		}
+		if !hasRecent {
+			t.Error("expected recent prompt from tail")
+		}
+	} else {
+		// Large file: at least the tail prompt
+		if !hasRecent {
+			t.Error("expected recent prompt from tail")
+		}
+	}
+}
+
+func TestExtractUserPrompts_Limit(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "session.jsonl")
+	writeJSONL(t, path,
+		metadataEntry("/proj"),
+		userEntry("first prompt"),
+		assistantEndTurn(),
+		userEntry("second prompt"),
+		assistantEndTurn(),
+		userEntry("third prompt"),
+		assistantEndTurn(),
+		userEntry("fourth prompt"),
+		assistantEndTurn(),
+		userEntry("fifth prompt"),
+		assistantEndTurn(),
+	)
+
+	prompts := ExtractUserPrompts(path, 3)
+	if len(prompts) != 3 {
+		t.Fatalf("expected 3 prompts (limited), got %d: %v", len(prompts), prompts)
+	}
+	// Should keep first + last 2
+	if prompts[0] != "first prompt" {
+		t.Errorf("expected first prompt preserved, got %q", prompts[0])
+	}
+	if prompts[2] != "fifth prompt" {
+		t.Errorf("expected last prompt preserved, got %q", prompts[2])
+	}
+}

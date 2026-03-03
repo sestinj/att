@@ -814,10 +814,10 @@ func (fc *FeedController) findWithFzf(fzfPath string) {
 
 	// Write a wrapper script to avoid quoting issues with tmux display-popup.
 	// Uses absolute fzf path so the popup works even if PATH doesn't include it.
-	// --with-nth=2 displays only the session name; field 3 (prompts) is searched but hidden.
+	// --with-nth=2.. shows name + prompts (fzf only searches displayed fields).
 	scriptFile := fc.fifoPath + ".find.sh"
 	script := fmt.Sprintf("#!/bin/sh\n"+
-		"idx=$('%s' --prompt='Find: ' --with-nth=2 --delimiter='\\t' --reverse --no-info < '%s')\n"+
+		"idx=$('%s' --prompt='Find: ' --with-nth=2.. --delimiter='\\t' --reverse --no-info < '%s')\n"+
 		"rc=$?\n"+
 		"rm -f '%s' '%s'\n"+
 		"[ $rc -eq 0 ] && idx=$(printf '%%s' \"$idx\" | cut -f1) && echo \"goto $idx\" > '%s'\n",
