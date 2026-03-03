@@ -813,6 +813,90 @@ func TestPrioritySameLevelPreservesWindowOrder(t *testing.T) {
 	}
 }
 
+func TestFuzzyMatch(t *testing.T) {
+	tests := []struct {
+		pattern string
+		str     string
+		want    bool
+	}{
+		// Substring matches
+		{"foo", "foobar", true},
+		{"bar", "foobar", true},
+		{"oba", "foobar", true},
+		// Fuzzy matches
+		{"fb", "foobar", true},
+		{"fbr", "foobar", true},
+		// Case insensitive
+		{"FOO", "foobar", true},
+		{"Fb", "FooBar", true},
+		// No match
+		{"xyz", "foobar", false},
+		{"baf", "foobar", false}, // b before a, but a before f — 'f' can't follow 'a'
+		// Empty
+		{"", "anything", true},
+	}
+
+	for _, tt := range tests {
+		got, _ := fuzzyMatch(tt.pattern, tt.str)
+		if got != tt.want {
+			t.Errorf("fuzzyMatch(%q, %q) = %v, want %v", tt.pattern, tt.str, got, tt.want)
+		}
+	}
+}
+
+func TestFuzzyMatch_SubstringBeatsGappy(t *testing.T) {
+	// "att" as substring in "attention" should score lower (better) than fuzzy in "a_t_t"
+	_, substringScore := fuzzyMatch("att", "attention")
+	_, fuzzyScore := fuzzyMatch("att", "a_test_thing")
+	if substringScore >= fuzzyScore {
+		t.Errorf("substring score (%d) should be less than fuzzy score (%d)", substringScore, fuzzyScore)
+	}
+}
+
+func TestFind_SingleResult_JumpsDirect(t *testing.T) {
+	fc := &FeedController{
+		allWindows: makeWindows(
+			[]string{"alpha", "beta", "gamma"},
+			[]string{"/a", "/b", "/c"},
+		),
+		stateByWindow: map[int]claude.Session{
+			0: {Summary: "Fix auth bug"},
+			1: {Summary: "Add logging"},
+			2: {Summary: "Refactor DB"},
+		},
+		cursor:    "0",
+		dismissed: make(map[string]bool),
+		attention: make(map[string]bool),
+	}
+
+	fc.find("logging")
+	if fc.cursor != "1" {
+		t.Errorf("expected cursor to jump to window 1 (logging), got %s", fc.cursor)
+	}
+}
+
+func TestFind_NoResults(t *testing.T) {
+	fc := &FeedController{
+		allWindows: makeWindows(
+			[]string{"alpha", "beta"},
+			[]string{"/a", "/b"},
+		),
+		stateByWindow: map[int]claude.Session{
+			0: {Summary: "Fix auth bug"},
+			1: {Summary: "Add logging"},
+		},
+		cursor:    "0",
+		dismissed: make(map[string]bool),
+		attention: make(map[string]bool),
+	}
+
+	fc.find("zzzzz")
+	// cursor should not change
+	if fc.cursor != "0" {
+		t.Errorf("expected cursor unchanged, got %s", fc.cursor)
+	}
+}
+
 func TestSessionEntryTextWithPriority(t *testing.T) {
 	w := WindowInfo{Index: "0", Name: "myproject", Path: "/proj"}
 	s := claude.Session{}

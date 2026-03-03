@@ -257,6 +257,14 @@ func (fc *FeedController) Run() error {
 			case strings.HasPrefix(cmd, "new "):
 				dir := strings.TrimPrefix(cmd, "new ")
 				fc.newSession(dir)
+			case cmd == "find", strings.HasPrefix(cmd, "find "):
+				query := ""
+				if strings.HasPrefix(cmd, "find ") {
+					query = strings.TrimPrefix(cmd, "find ")
+				}
+				fc.find(query)
+			case strings.HasPrefix(cmd, "goto "):
+				fc.gotoWindow(strings.TrimPrefix(cmd, "goto "))
 			}
 
 		case <-fullTicker.C:
@@ -624,6 +632,118 @@ func (fc *FeedController) newSession(dir string) {
 	fc.updateStatusBar()
 }
 
+// fuzzyMatch checks if pattern matches str. Prefers substring matches (scored
+// by position) and falls back to fuzzy character-by-character matching.
+// Returns (matched, score) where lower score is better.
+func fuzzyMatch(pattern, str string) (bool, int) {
+	p := strings.ToLower(pattern)
+	s := strings.ToLower(str)
+
+	// Substring match: score = position (prefix = 0 = best)
+	if idx := strings.Index(s, p); idx >= 0 {
+		return true, idx
+	}
+
+	// Fuzzy: each pattern char must appear in order
+	pi := 0
+	gaps := 0
+	prev := -1
+	for i := 0; i < len(s) && pi < len(p); i++ {
+		if s[i] == p[pi] {
+			if prev >= 0 && i > prev+1 {
+				gaps += i - prev - 1
+			}
+			prev = i
+			pi++
+		}
+	}
+	if pi < len(p) {
+		return false, 0
+	}
+	// Offset so fuzzy matches always rank below substring matches
+	return true, 1000 + gaps
+}
+
+func (fc *FeedController) find(query string) {
+	type result struct {
+		windowIdx int
+		name      string
+		score     int
+	}
+
+	var results []result
+	for i, w := range fc.allWindows {
+		s := fc.stateByWindow[i]
+		name := s.Summary
+		if name == "" {
+			name = strings.TrimSuffix(w.Name, "*")
+		}
+
+		if query == "" {
+			// Empty query: show all sessions
+			results = append(results, result{windowIdx: i, name: name, score: i})
+			continue
+		}
+
+		bestScore := -1
+		for _, target := range []string{name, strings.TrimSuffix(w.Name, "*"), w.Path} {
+			if ok, score := fuzzyMatch(query, target); ok {
+				if bestScore < 0 || score < bestScore {
+					bestScore = score
+				}
+			}
+		}
+		if bestScore >= 0 {
+			results = append(results, result{windowIdx: i, name: name, score: bestScore})
+		}
+	}
+
+	if len(results) == 0 {
+		return
+	}
+
+	sort.Slice(results, func(i, j int) bool {
+		return results[i].score < results[j].score
+	})
+
+	// Single result: jump directly
+	if len(results) == 1 {
+		fc.gotoWindow(fc.allWindows[results[0].windowIdx].Index)
+		return
+	}
+
+	// Cap at 10 results for the menu
+	if len(results) > 10 {
+		results = results[:10]
+	}
+
+	guard := fmt.Sprintf("[ -p %s ]", fc.fifoPath)
+	args := []string{"display-menu", "-t", fc.sessionName, "-T", "Find"}
+	for i, r := range results {
+		shortcut := ""
+		if i < 9 {
+			shortcut = strconv.Itoa(i + 1)
+		}
+		idx := fc.allWindows[r.windowIdx].Index
+		cmd := fmt.Sprintf("run-shell '%s && echo goto %s > %s || true'", guard, idx, fc.fifoPath)
+		args = append(args, r.name, shortcut, cmd)
+	}
+
+	exec.Command("tmux", args...).Run()
+}
+
+func (fc *FeedController) gotoWindow(windowIndex string) {
+	for _, w := range fc.allWindows {
+		if w.Index == windowIndex {
+			fc.cursor = windowIndex
+			fc.focusCurrent()
+			fc.updateStatusBar()
+			fc.renderSessionLine()
+			return
+		}
+	}
+}
+
 func (fc *FeedController) killCurrent() {
 	pos := fc.cursorPos()
 	if pos < 0 || len(fc.allWindows) == 0 {
@@ -756,6 +876,14 @@ func (fc *FeedController) bindKeys() {
 		log.Printf("att: bind M-p failed: %v", err)
 	}
 
+	// M-f: fuzzy find sessions
+	if err := BindKeyDirect("M-f",
+		"command-prompt", "-p", "Find:",
+		fmt.Sprintf("run-shell '%s && echo find %%%%1 > %s || true'", guard, fifoTemplate),
+	); err != nil {
+		log.Printf("att: bind M-f failed: %v", err)
+	}
+
 	newCmd := fmt.Sprintf("run-shell '%s && echo new %%%%1 > %s || true'", guard, fifoTemplate)
 	if len(fc.projects) > 0 {
 		menuArgs := []string{"display-menu", "-T", "New session"}
@@ -793,7 +921,7 @@ func (fc *FeedController) unbindKeys() {
 			return // other feed still running, keep bindings
 		}
 	}
-	for _, key := range []string{"M-]", "M-[", "M-Enter", "C-q", "M-a", "M-d", "M-z", "M-p", "M-n"} {
+	for _, key := range []string{"M-]", "M-[", "M-Enter", "C-q", "M-a", "M-d", "M-z", "M-p", "M-f", "M-n"} {
 		UnbindKey(key)
 	}
 }
