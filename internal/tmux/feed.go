@@ -1082,10 +1082,11 @@ func (fc *FeedController) bindKeys() {
 		log.Printf("att: bind M-p failed: %v", err)
 	}
 
-	// M-f: fuzzy find sessions (sends "find" to FIFO, handler opens fzf popup or menu)
+	// M-/: fuzzy find sessions (sends "find" to FIFO, handler opens fzf popup or menu)
+	// Avoid M-f because many terminals send the same escape sequence for Alt+Right arrow.
 	findCmd := fmt.Sprintf("%s && echo find > %s || true", guard, fifoTemplate)
-	if err := BindKey("M-f", findCmd); err != nil {
-		log.Printf("att: bind M-f failed: %v", err)
+	if err := BindKey("M-/", findCmd); err != nil {
+		log.Printf("att: bind M-/ failed: %v", err)
 	}
 
 	newCmd := fmt.Sprintf("run-shell '%s && echo new %%%%1 > %s || true'", guard, fifoTemplate)
@@ -1125,7 +1126,7 @@ func (fc *FeedController) unbindKeys() {
 			return // other feed still running, keep bindings
 		}
 	}
-	for _, key := range []string{"M-]", "M-[", "M-Enter", "C-q", "M-a", "M-d", "M-i", "M-z", "M-p", "M-f", "M-n"} {
+	for _, key := range []string{"M-]", "M-[", "M-Enter", "C-q", "M-a", "M-d", "M-i", "M-z", "M-p", "M-/", "M-n"} {
 		UnbindKey(key)
 	}
 }
