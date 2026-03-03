@@ -784,8 +784,11 @@ func (fc *FeedController) find(query string) {
 	fc.findWithMenu(query)
 }
 
-func (fc *FeedController) findWithFzf(fzfPath string) {
-	// Build session list: index\tdisplay_name\tprompts (for search)
+// buildFzfLines generates the tab-delimited lines fed to fzf.
+// Format: windowIndex\tprefix+name\tprompts
+// Field 1 (windowIndex) is hidden by --with-nth=2.. but used to identify the selection.
+// Field 2 (name) and field 3 (prompts) are displayed and searched.
+func (fc *FeedController) buildFzfLines() []string {
 	var lines []string
 	for i, w := range fc.allWindows {
 		s := fc.stateByWindow[i]
@@ -804,8 +807,19 @@ func (fc *FeedController) findWithFzf(fzfPath string) {
 			promptStr = entry.text
 		}
 
+		// Strip control characters that would corrupt the line-based format
+		for _, bad := range []string{"\t", "\n", "\r"} {
+			name = strings.ReplaceAll(name, bad, " ")
+			promptStr = strings.ReplaceAll(promptStr, bad, " ")
+		}
+
 		lines = append(lines, fmt.Sprintf("%s\t%s%s\t%s", w.Index, prefix, name, promptStr))
 	}
+	return lines
+}
+
+func (fc *FeedController) findWithFzf(fzfPath string) {
+	lines := fc.buildFzfLines()
 
 	sessFile := fc.fifoPath + ".sessions"
 	if err := os.WriteFile(sessFile, []byte(strings.Join(lines, "\n")+"\n"), 0600); err != nil {

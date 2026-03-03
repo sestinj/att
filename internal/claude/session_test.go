@@ -536,11 +536,21 @@ func TestExtractUserPrompts_FiltersJunk(t *testing.T) {
 		userEntry("[Request interrupted by user]"),
 		toolResultEntry(),
 		`{"type":"user","message":{"role":"user","content":"ok"}}`, // too short (2 chars)
+		// System-injected messages that appear as user entries
+		userEntry("<task-notification><task-id>abc123</task-id></task-notification>"),
+		userEntry("<local-command-caveat>Caveat: The messages below were generated...</local-command-caveat>"),
+		userEntry("<bash-input>git status</bash-input>"),
+		userEntry("<bash-stdout>On branch main\nnothing to commit</bash-stdout>"),
+		userEntry("<bash-stderr>warning: something</bash-stderr>"),
+		userEntry("<teammate-message from='agent'>status update</teammate-message>"),
+		userEntry("<system-reminder>reminder text</system-reminder>"),
+		userEntry("<tool-use-prompt>Use the Read tool</tool-use-prompt>"),
+		userEntry("<user-prompt-submit-hook>hook output</user-prompt-submit-hook>"),
 	)
 
 	prompts := ExtractUserPrompts(path, 10)
 	if len(prompts) != 1 {
-		t.Fatalf("expected 1 prompt (junk filtered), got %d: %v", len(prompts), prompts)
+		t.Fatalf("expected 1 prompt (all junk filtered), got %d: %v", len(prompts), prompts)
 	}
 	if prompts[0] != "real prompt here" {
 		t.Errorf("expected 'real prompt here', got %q", prompts[0])

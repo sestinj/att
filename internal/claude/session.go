@@ -273,16 +273,29 @@ func scanUserPrompts(data []byte) []string {
 }
 
 // isRealPrompt filters out system/interrupt messages that aren't actual user prompts.
+// Claude Code injects various system messages as "type":"user" entries in JSONL;
+// these are noise for search purposes.
 func isRealPrompt(text string) bool {
-	if strings.HasPrefix(text, "[Request interrupted") {
-		return false
-	}
-	if strings.HasPrefix(text, "<teammate-message") {
-		return false
-	}
 	// Skip very short or whitespace-only text
 	if len(strings.TrimSpace(text)) < 3 {
 		return false
+	}
+	// System-injected messages that appear as user entries
+	for _, prefix := range []string{
+		"[Request interrupted",
+		"<teammate-message",
+		"<task-notification",
+		"<local-command-caveat",
+		"<bash-input>",
+		"<bash-stdout>",
+		"<bash-stderr>",
+		"<system-reminder",
+		"<tool-use-prompt",
+		"<user-prompt-submit-hook",
+	} {
+		if strings.HasPrefix(text, prefix) {
+			return false
+		}
 	}
 	return true
 }

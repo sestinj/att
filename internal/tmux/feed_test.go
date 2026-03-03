@@ -3,6 +3,7 @@ package tmux
 import (
 	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -943,31 +944,333 @@ func TestPromptCachePopulatedOnRefreshAndUsedByFind(t *testing.T) {
 		t.Errorf("expected prompt cache to contain 'now add error handling', got %q", entry.text)
 	}
 
-	// Simulate what findWithFzf writes to the sessions file
-	var lines []string
-	for i, w := range fc.allWindows {
-		s := fc.stateByWindow[i]
-		name := s.Summary
-		if name == "" {
-			name = strings.TrimSuffix(w.Name, "*")
-		}
-		prefix := "  "
-		var promptStr string
-		if cached, ok := fc.promptCache[s.SessionFile]; ok {
-			promptStr = cached.text
-		}
-		lines = append(lines, fmt.Sprintf("%s\t%s%s\t%s", w.Index, prefix, name, promptStr))
+	// Use buildFzfLines (the same logic findWithFzf uses)
+	lines := fc.buildFzfLines()
+	if len(lines) != 1 {
+		t.Fatalf("expected 1 line, got %d", len(lines))
 	}
-
-	sessFileContent := strings.Join(lines, "\n") + "\n"
 
 	// The sessions file must have prompts in field 3 (tab-separated)
-	fields := strings.Split(strings.TrimSpace(sessFileContent), "\t")
-	if len(fields) < 3 {
-		t.Fatalf("expected at least 3 tab-separated fields, got %d: %q", len(fields), sessFileContent)
+	fields := strings.Split(lines[0], "\t")
+	if len(fields) != 3 {
+		t.Fatalf("expected 3 tab-separated fields, got %d: %q", len(fields), lines[0])
+	}
+	if fields[0] != "0" {
+		t.Errorf("field 1 should be window index '0', got %q", fields[0])
 	}
 	if !strings.Contains(fields[2], "fix the login bug") {
-		t.Errorf("field 3 should contain prompt text for fzf search, got %q", fields[2])
+		t.Errorf("field 3 should contain prompt text, got %q", fields[2])
+	}
+}
+
+// --- buildFzfLines format tests ---
+
+func TestBuildFzfLines_Format(t *testing.T) {
+	dir := t.TempDir()
+	s1File := filepath.Join(dir, "s1.jsonl")
+	s2File := filepath.Join(dir, "s2.jsonl")
+
+	os.WriteFile(s1File, []byte(
+		`{"type":"user","cwd":"/proj1","sessionId":"s1"}`+"\n"+
+			`{"type":"user","message":{"role":"user","content":"fix authentication bug"}}`+"\n"+
+			`{"type":"assistant","message":{"content":[{"type":"text"}]}}`+"\n"+
+			`{"type":"user","message":{"role":"user","content":"add rate limiting"}}`+"\n",
+	), 0644)
+	os.WriteFile(s2File, []byte(
+		`{"type":"user","cwd":"/proj2","sessionId":"s2"}`+"\n"+
+			`{"type":"user","message":{"role":"user","content":"implement dark mode toggle"}}`+"\n"+
+			`{"type":"assistant","message":{"content":[{"type":"text"}]}}`+"\n"+
+			`{"type":"user","message":{"role":"user","content":"fix CSS transition glitch"}}`+"\n",
+	), 0644)
+
+	fc := &FeedController{
+		allWindows: []WindowInfo{
+			{Index: "0", Name: "backend", Path: "/proj1"},
+			{Index: "1", Name: "frontend", Path: "/proj2"},
+		},
+		stateByWindow: map[int]claude.Session{
+			0: {SessionFile: s1File, Summary: "Fix auth"},
+			1: {SessionFile: s2File, Summary: "Dark mode"},
+		},
+		discoveredSessions: []claude.Session{
+			{SessionFile: s1File, ModTime: time.Now()},
+			{SessionFile: s2File, ModTime: time.Now()},
+		},
+		attention: map[string]bool{s1File: true},
+	}
+	fc.refreshPromptCache()
+
+	lines := fc.buildFzfLines()
+	if len(lines) != 2 {
+		t.Fatalf("expected 2 lines, got %d", len(lines))
+	}
+
+	// Validate each line has exactly 3 tab-separated fields
+	for i, line := range lines {
+		fields := strings.Split(line, "\t")
+		if len(fields) != 3 {
+			t.Errorf("line %d: expected 3 fields, got %d: %q", i, len(fields), line)
+		}
+	}
+
+	// Line 0: window 0, attention prefix, "Fix auth", prompts about authentication
+	f0 := strings.Split(lines[0], "\t")
+	if f0[0] != "0" {
+		t.Errorf("line 0 field 1: expected '0', got %q", f0[0])
+	}
+	if !strings.HasPrefix(f0[1], "* ") {
+		t.Errorf("line 0 field 2: expected attention prefix '* ', got %q", f0[1])
+	}
+	if !strings.Contains(f0[1], "Fix auth") {
+		t.Errorf("line 0 field 2: expected 'Fix auth', got %q", f0[1])
+	}
+	if !strings.Contains(f0[2], "fix authentication bug") {
+		t.Errorf("line 0 field 3: expected 'fix authentication bug', got %q", f0[2])
+	}
+	if !strings.Contains(f0[2], "add rate limiting") {
+		t.Errorf("line 0 field 3: expected 'add rate limiting', got %q", f0[2])
+	}
+
+	// Line 1: window 1, no attention, "Dark mode", prompts about dark mode
+	f1 := strings.Split(lines[1], "\t")
+	if f1[0] != "1" {
+		t.Errorf("line 1 field 1: expected '1', got %q", f1[0])
+	}
+	if !strings.HasPrefix(f1[1], "  ") {
+		t.Errorf("line 1 field 2: expected no-attention prefix '  ', got %q", f1[1])
+	}
+	if !strings.Contains(f1[2], "dark mode") {
+		t.Errorf("line 1 field 3: expected 'dark mode', got %q", f1[2])
+	}
+}
+
+func TestBuildFzfLines_TabsInPromptsAreSanitized(t *testing.T) {
+	dir := t.TempDir()
+	sFile := filepath.Join(dir, "s.jsonl")
+	// Prompt contains a tab character
+	os.WriteFile(sFile, []byte(
+		`{"type":"user","cwd":"/proj","sessionId":"s"}`+"\n"+
+			`{"type":"user","message":{"role":"user","content":"before\tafter"}}`+"\n",
+	), 0644)
+
+	fc := &FeedController{
+		allWindows: []WindowInfo{
+			{Index: "0", Name: "proj", Path: "/proj"},
+		},
+		stateByWindow: map[int]claude.Session{
+			0: {SessionFile: sFile, Summary: "test"},
+		},
+		discoveredSessions: []claude.Session{
+			{SessionFile: sFile, ModTime: time.Now()},
+		},
+		attention: make(map[string]bool),
+	}
+	fc.refreshPromptCache()
+
+	lines := fc.buildFzfLines()
+	fields := strings.Split(lines[0], "\t")
+	if len(fields) != 3 {
+		t.Errorf("tab in prompt should not create extra field; expected 3 fields, got %d: %q", len(fields), lines[0])
+	}
+}
+
+func TestBuildFzfLines_EmptyPromptCache(t *testing.T) {
+	fc := &FeedController{
+		allWindows: []WindowInfo{
+			{Index: "0", Name: "proj", Path: "/proj"},
+		},
+		stateByWindow: map[int]claude.Session{
+			0: {Summary: "my project"},
+		},
+		attention: make(map[string]bool),
+	}
+
+	lines := fc.buildFzfLines()
+	fields := strings.Split(lines[0], "\t")
+	if len(fields) != 3 {
+		t.Fatalf("expected 3 fields even with empty cache, got %d: %q", len(fields), lines[0])
+	}
+	if fields[2] != "" {
+		t.Errorf("field 3 should be empty when no cache, got %q", fields[2])
+	}
+}
+
+// --- fzf integration tests ---
+
+func TestFzfIntegration_SearchByNameAndPrompt(t *testing.T) {
+	fzfPath, err := exec.LookPath("fzf")
+	if err != nil {
+		t.Skip("fzf not installed, skipping integration test")
+	}
+
+	dir := t.TempDir()
+	s1File := filepath.Join(dir, "s1.jsonl")
+	s2File := filepath.Join(dir, "s2.jsonl")
+	s3File := filepath.Join(dir, "s3.jsonl")
+
+	os.WriteFile(s1File, []byte(
+		`{"type":"user","cwd":"/proj1","sessionId":"s1"}`+"\n"+
+			`{"type":"user","message":{"role":"user","content":"fix the authentication bug in the login flow"}}`+"\n"+
+			`{"type":"assistant","message":{"content":[{"type":"text"}]}}`+"\n"+
+			`{"type":"user","message":{"role":"user","content":"also add session expiry handling"}}`+"\n",
+	), 0644)
+
+	os.WriteFile(s2File, []byte(
+		`{"type":"user","cwd":"/proj2","sessionId":"s2"}`+"\n"+
+			`{"type":"user","message":{"role":"user","content":"implement telemetry dashboard"}}`+"\n"+
+			`{"type":"assistant","message":{"content":[{"type":"text"}]}}`+"\n"+
+			`{"type":"user","message":{"role":"user","content":"add error rate tracking chart"}}`+"\n",
+	), 0644)
+
+	os.WriteFile(s3File, []byte(
+		`{"type":"user","cwd":"/proj3","sessionId":"s3"}`+"\n"+
+			`{"type":"user","message":{"role":"user","content":"refactor database connection pooling"}}`+"\n",
+	), 0644)
+
+	fc := &FeedController{
+		allWindows: []WindowInfo{
+			{Index: "0", Name: "auth-service", Path: "/proj1"},
+			{Index: "1", Name: "monitoring", Path: "/proj2"},
+			{Index: "2", Name: "db-layer", Path: "/proj3"},
+		},
+		stateByWindow: map[int]claude.Session{
+			0: {SessionFile: s1File, Summary: "Fix auth bug"},
+			1: {SessionFile: s2File, Summary: "Telemetry dash"},
+			2: {SessionFile: s3File, Summary: "DB refactor"},
+		},
+		discoveredSessions: []claude.Session{
+			{SessionFile: s1File, ModTime: time.Now()},
+			{SessionFile: s2File, ModTime: time.Now()},
+			{SessionFile: s3File, ModTime: time.Now()},
+		},
+		attention: make(map[string]bool),
+	}
+	fc.refreshPromptCache()
+
+	lines := fc.buildFzfLines()
+	input := strings.Join(lines, "\n") + "\n"
+
+	// Log the raw input for debugging
+	t.Logf("fzf input:\n%s", input)
+	for i, line := range lines {
+		t.Logf("line %d fields: %v", i, strings.Split(line, "\t"))
+	}
+
+	tests := []struct {
+		query   string
+		wantIdx []string // expected window indices in results (in order)
+		desc    string
+	}{
+		// Search by session name
+		{"Fix auth", []string{"0"}, "name match on 'Fix auth'"},
+		{"Telemetry", []string{"1"}, "name match on 'Telemetry'"},
+		{"DB refactor", []string{"2"}, "name match on 'DB refactor'"},
+
+		// Search by prompt content
+		{"login flow", []string{"0"}, "prompt match on 'login flow'"},
+		{"session expiry", []string{"0"}, "prompt match on 'session expiry'"},
+		{"telemetry dashboard", []string{"1"}, "prompt match on 'telemetry dashboard'"},
+		{"error rate", []string{"1"}, "prompt match on 'error rate'"},
+		{"database connection", []string{"2"}, "prompt match on 'database connection'"},
+		{"pooling", []string{"2"}, "prompt match on 'pooling'"},
+
+		// No match
+		{"zzzznonexistent", nil, "no match expected"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.desc, func(t *testing.T) {
+			// Use --filter for non-interactive matching, same flags as findWithFzf
+			cmd := exec.Command(fzfPath, "--filter="+tt.query,
+				"--with-nth=2..", "--delimiter=\t", "--no-sort")
+			cmd.Stdin = strings.NewReader(input)
+			out, err := cmd.Output()
+
+			if tt.wantIdx == nil {
+				// Expect no results (exit code 1)
+				if err == nil && len(strings.TrimSpace(string(out))) > 0 {
+					t.Errorf("expected no results, got: %s", string(out))
+				}
+				return
+			}
+
+			if err != nil {
+				t.Fatalf("fzf --filter=%q failed: %v", tt.query, err)
+			}
+
+			resultLines := strings.Split(strings.TrimSpace(string(out)), "\n")
+			if len(resultLines) == 0 || resultLines[0] == "" {
+				t.Fatalf("expected results for query %q, got none", tt.query)
+			}
+
+			// Extract window indices from results
+			var gotIndices []string
+			for _, rl := range resultLines {
+				idx := strings.SplitN(rl, "\t", 2)[0]
+				gotIndices = append(gotIndices, idx)
+			}
+
+			// Check that all expected indices appear in results
+			for _, want := range tt.wantIdx {
+				found := false
+				for _, got := range gotIndices {
+					if got == want {
+						found = true
+						break
+					}
+				}
+				if !found {
+					t.Errorf("expected index %s in results for query %q, got indices %v\nraw output: %s",
+						want, tt.query, gotIndices, string(out))
+				}
+			}
+		})
+	}
+}
+
+func TestFzfIntegration_OutputFormatPreservesTabFields(t *testing.T) {
+	fzfPath, err := exec.LookPath("fzf")
+	if err != nil {
+		t.Skip("fzf not installed")
+	}
+
+	// Test that fzf --filter output preserves the original line (including field 1)
+	// so that `cut -f1` can extract the window index.
+	input := "5\t  My Session\tsome prompt text\n"
+	cmd := exec.Command(fzfPath, "--filter=Session",
+		"--with-nth=2..", "--delimiter=\t", "--no-sort")
+	cmd.Stdin = strings.NewReader(input)
+	out, err := cmd.Output()
+	if err != nil {
+		t.Fatalf("fzf failed: %v", err)
+	}
+
+	result := strings.TrimSpace(string(out))
+	fields := strings.SplitN(result, "\t", 2)
+	if fields[0] != "5" {
+		t.Errorf("fzf output should preserve original line with field 1 = '5', got %q", fields[0])
+	}
+}
+
+func TestFzfIntegration_CutExtractsWindowIndex(t *testing.T) {
+	// Test the shell pipeline: fzf output -> cut -f1 -> window index
+	// This simulates what the shell script does after fzf returns.
+	input := "3\t  Fix auth bug\tfix the login | add tests\n"
+
+	cutPath, err := exec.LookPath("cut")
+	if err != nil {
+		t.Skip("cut not available")
+	}
+
+	cmd := exec.Command(cutPath, "-f1")
+	cmd.Stdin = strings.NewReader(input)
+	out, err := cmd.Output()
+	if err != nil {
+		t.Fatalf("cut failed: %v", err)
+	}
+
+	if strings.TrimSpace(string(out)) != "3" {
+		t.Errorf("cut -f1 should extract '3', got %q", strings.TrimSpace(string(out)))
 	}
 }
 
