@@ -168,9 +168,10 @@ func extractCustomTitle(data []byte) string {
 }
 
 // ExtractUserPrompts reads a session JSONL file and returns up to limit
-// user prompt texts. For large files, only the last 64KB is scanned to
-// keep it fast.
+// user prompt texts. For large files, reads the first 8KB (for the initial
+// prompt) and the last 64KB (for recent prompts).
 func ExtractUserPrompts(sessionFile string, limit int) []string {
+	const maxHead = 8 * 1024
 	const maxTail = 64 * 1024
 
 	f, err := os.Open(sessionFile)
@@ -184,26 +185,64 @@ func ExtractUserPrompts(sessionFile string, limit int) []string {
 		return nil
 	}
 
-	var data []byte
-	if fi.Size() <= maxTail {
-		data, err = io.ReadAll(f)
+	var headData, tailData []byte
+	if fi.Size() <= maxHead+maxTail {
+		// Small file: read the whole thing
+		all, err := io.ReadAll(f)
 		if err != nil {
 			return nil
 		}
+		headData = all
 	} else {
+		// Read first 8KB for the initial prompt
+		head := make([]byte, maxHead)
+		n, _ := f.Read(head)
+		headData = head[:n]
+
 		// Read last 64KB for recent prompts
-		buf := make([]byte, maxTail)
-		n, err := f.ReadAt(buf, fi.Size()-maxTail)
+		tail := make([]byte, maxTail)
+		n, err = f.ReadAt(tail, fi.Size()-maxTail)
 		if err != nil && err != io.EOF {
-			return nil
-		}
-		data = buf[:n]
-		// Skip first partial line
-		if idx := bytes.IndexByte(data, '\n'); idx >= 0 {
-			data = data[idx+1:]
+			tailData = nil
+		} else {
+			tailData = tail[:n]
+			// Skip first partial line
+			if idx := bytes.IndexByte(tailData, '\n'); idx >= 0 {
+				tailData = tailData[idx+1:]
+			}
 		}
 	}
 
+	headPrompts := scanUserPrompts(headData)
+	tailPrompts := scanUserPrompts(tailData)
+
+	// Deduplicate: head prompts first, then tail
+	seen := make(map[string]bool)
+	var prompts []string
+	for _, p := range headPrompts {
+		if !seen[p] {
+			seen[p] = true
+			prompts = append(prompts, p)
+		}
+	}
+	for _, p := range tailPrompts {
+		if !seen[p] {
+			seen[p] = true
+			prompts = append(prompts, p)
+		}
+	}
+
+	if len(prompts) > limit {
+		// Keep first prompt + most recent
+		result := make([]string, 0, limit)
+		result = append(result, prompts[0])
+		result = append(result, prompts[len(prompts)-limit+1:]...)
+		prompts = result
+	}
+	return prompts
+}
+
+func scanUserPrompts(data []byte) []string {
 	var prompts []string
 	for _, line := range bytes.Split(data, []byte{'\n'}) {
 		if len(line) == 0 {
@@ -226,15 +265,26 @@ func ExtractUserPrompts(sessionFile string, limit int) []string {
 		}
 
 		text := extractPromptText(entry.Message.Content)
-		if text != "" {
+		if text != "" && isRealPrompt(text) {
 			prompts = append(prompts, text)
 		}
 	}
-
-	if len(prompts) > limit {
-		prompts = prompts[len(prompts)-limit:]
-	}
 	return prompts
+}
+
+// isRealPrompt filters out system/interrupt messages that aren't actual user prompts.
+func isRealPrompt(text string) bool {
+	if strings.HasPrefix(text, "[Request interrupted") {
+		return false
+	}
+	if strings.HasPrefix(text, "<teammate-message") {
+		return false
+	}
+	// Skip very short or whitespace-only text
+	if len(strings.TrimSpace(text)) < 3 {
+		return false
+	}
+	return true
 }
 
 // extractPromptText extracts the user's text from a message content field,
@@ -250,16 +300,18 @@ func extractPromptText(raw json.RawMessage) string {
 		return s
 	}
 
-	// Try array of content blocks
-	var blocks []struct {
-		Type string `json:"type"`
-		Text string `json:"text"`
+	// Try array of content blocks — skip tool_result entries
+	var blocks []json.RawMessage
+	if json.Unmarshal(raw, &blocks) != nil {
+		return ""
 	}
-	if json.Unmarshal(raw, &blocks) == nil {
-		for _, b := range blocks {
-			if b.Type == "text" && b.Text != "" {
-				return b.Text
-			}
+	for _, block := range blocks {
+		var b struct {
+			Type string `json:"type"`
+			Text string `json:"text"`
+		}
+		if json.Unmarshal(block, &b) == nil && b.Type == "text" && b.Text != "" {
+			return b.Text
 		}
 	}
 
