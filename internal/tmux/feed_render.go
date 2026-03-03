@@ -27,6 +27,7 @@ func (fc *FeedController) renderSessionLine() {
 		var sessions []claude.Session
 		var attnFlags []bool
 		var snoozedFlags []bool
+		var pinnedFlags []bool
 		var priorities []int
 		for i := range fc.allWindows {
 			s := fc.stateByWindow[i]
@@ -37,13 +38,18 @@ func (fc *FeedController) renderSessionLine() {
 				isSnoozed = fc.snooze.IsSnoozed(s.SessionFile)
 			}
 			snoozedFlags = append(snoozedFlags, isSnoozed)
+			isPinned := false
+			if s.SessionFile != "" && fc.pin != nil {
+				isPinned = fc.pin.IsPinned(s.SessionFile)
+			}
+			pinnedFlags = append(pinnedFlags, isPinned)
 			p := DefaultPriority
 			if s.SessionFile != "" && fc.priority != nil {
 				p = fc.priority.Get(s.SessionFile)
 			}
 			priorities = append(priorities, p)
 		}
-		line := formatSessionLine(fc.allWindows, sessions, attnFlags, fc.cursorPos(), fc.getClientWidth(), snoozedFlags, priorities)
+		line := formatSessionLine(fc.allWindows, sessions, attnFlags, fc.cursorPos(), fc.getClientWidth(), snoozedFlags, pinnedFlags, priorities)
 		SetStatusLeftForSession(fc.sessionName, line)
 		return
 	}
@@ -54,10 +60,12 @@ func (fc *FeedController) renderSessionLine() {
 		return
 	}
 
-	// Build filtered window list from attention queue
+	// Build filtered window list from attention queue (includes pinned items)
 	var filtered []WindowInfo
 	var filteredSessions []claude.Session
 	var attnFlags []bool
+	var snoozedFlags []bool
+	var pinnedFlags []bool
 	var priorities []int
 	activeIdx := -1
 	for i, wi := range fc.attentionQueue {
@@ -68,6 +76,16 @@ func (fc *FeedController) renderSessionLine() {
 		if fc.allWindows[wi].Index == fc.cursor {
 			activeIdx = i
 		}
+		isSnoozed := false
+		if s.SessionFile != "" && fc.snooze != nil {
+			isSnoozed = fc.snooze.IsSnoozed(s.SessionFile)
+		}
+		snoozedFlags = append(snoozedFlags, isSnoozed)
+		isPinned := false
+		if s.SessionFile != "" && fc.pin != nil {
+			isPinned = fc.pin.IsPinned(s.SessionFile)
+		}
+		pinnedFlags = append(pinnedFlags, isPinned)
 		p := DefaultPriority
 		if s.SessionFile != "" && fc.priority != nil {
 			p = fc.priority.Get(s.SessionFile)
@@ -75,12 +93,12 @@ func (fc *FeedController) renderSessionLine() {
 		priorities = append(priorities, p)
 	}
 
-	line := formatSessionLine(filtered, filteredSessions, attnFlags, activeIdx, fc.getClientWidth(), nil, priorities)
+	line := formatSessionLine(filtered, filteredSessions, attnFlags, activeIdx, fc.getClientWidth(), snoozedFlags, pinnedFlags, priorities)
 	SetStatusLeftForSession(fc.sessionName, line)
 }
 
 // sessionEntryText returns the display text for a window's session entry.
-func sessionEntryText(w WindowInfo, s claude.Session, needsAttention bool, snoozed bool, priority int) string {
+func sessionEntryText(w WindowInfo, s claude.Session, needsAttention bool, snoozed bool, pinned bool, priority int) string {
 	name := s.Summary
 	if name == "" {
 		name = strings.TrimSuffix(w.Name, "*")
@@ -100,6 +118,13 @@ func sessionEntryText(w WindowInfo, s claude.Session, needsAttention bool, snooz
 			stateStr += " Snz"
 		}
 	}
+	if pinned {
+		if stateStr == "" {
+			stateStr = "Pin"
+		} else {
+			stateStr += " Pin"
+		}
+	}
 
 	var prefix string
 	if priority != DefaultPriority {
@@ -114,10 +139,11 @@ func sessionEntryText(w WindowInfo, s claude.Session, needsAttention bool, snooz
 
 // formatSessionLine builds the tmux status-format string for the session bar.
 // One entry per window, highlighted by activeIdx (cursor position).
-// attn marks which entries need attention, snoozed marks snoozed entries.
+// attn marks which entries need attention, snoozed/pinned mark state flags.
 // priorities holds the priority level for each entry (nil means all default).
-func formatSessionLine(windows []WindowInfo, sessions []claude.Session, attn []bool, activeIdx int, width int, snoozed []bool, priorities ...[]int) string {
+func formatSessionLine(windows []WindowInfo, sessions []claude.Session, attn []bool, activeIdx int, width int, snoozed []bool, pinned []bool, priorities ...[]int) string {
 	snoozedFlags := snoozed
+	pinnedFlags := pinned
 	var priorityFlags []int
 	if len(priorities) > 0 {
 		priorityFlags = priorities[0]
@@ -135,11 +161,12 @@ func formatSessionLine(windows []WindowInfo, sessions []claude.Session, attn []b
 		}
 		needsAttn := len(attn) > i && attn[i]
 		isSnoozed := len(snoozedFlags) > i && snoozedFlags[i]
+		isPinned := len(pinnedFlags) > i && pinnedFlags[i]
 		p := DefaultPriority
 		if len(priorityFlags) > i {
 			p = priorityFlags[i]
 		}
-		text := sessionEntryText(w, s, needsAttn, isSnoozed, p)
+		text := sessionEntryText(w, s, needsAttn, isSnoozed, isPinned, p)
 		entries = append(entries, entry{text: text, len: len(text)})
 	}
 

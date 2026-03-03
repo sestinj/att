@@ -46,7 +46,7 @@ func TestFormatSessionLine_HighlightFollowsCursor(t *testing.T) {
 	attn := []bool{false, true, true}
 
 	// Cursor on alpha (index 0) — not needing attention
-	line := formatSessionLine(windows, sessions, attn, 0, 200, nil)
+	line := formatSessionLine(windows, sessions, attn, 0, 200, nil, nil)
 	if !strings.Contains(line, "#[reverse]alpha#[noreverse]") {
 		t.Errorf("cursor=0: expected alpha highlighted, got: %s", line)
 	}
@@ -55,7 +55,7 @@ func TestFormatSessionLine_HighlightFollowsCursor(t *testing.T) {
 	}
 
 	// Cursor on beta (index 1) — needs attention
-	line = formatSessionLine(windows, sessions, attn, 1, 200, nil)
+	line = formatSessionLine(windows, sessions, attn, 1, 200, nil, nil)
 	if !strings.Contains(line, "#[reverse]beta Attn*#[noreverse]") {
 		t.Errorf("cursor=1: expected beta highlighted with Attn*, got: %s", line)
 	}
@@ -64,7 +64,7 @@ func TestFormatSessionLine_HighlightFollowsCursor(t *testing.T) {
 	}
 
 	// Cursor on gamma (index 2) — needs attention
-	line = formatSessionLine(windows, sessions, attn, 2, 200, nil)
+	line = formatSessionLine(windows, sessions, attn, 2, 200, nil, nil)
 	if !strings.Contains(line, "#[reverse]gamma Attn*#[noreverse]") {
 		t.Errorf("cursor=2: expected gamma highlighted with Attn*, got: %s", line)
 	}
@@ -80,7 +80,7 @@ func TestFormatSessionLine_NoArrowsWhenFits(t *testing.T) {
 		[]string{"session-alpha.jsonl", "session-beta.jsonl"},
 	)
 
-	line := formatSessionLine(windows, sessions, nil, 0, 200, nil)
+	line := formatSessionLine(windows, sessions, nil, 0, 200, nil, nil)
 	if strings.Contains(line, "\u25c0") || strings.Contains(line, "\u25b6") {
 		t.Errorf("should not have arrows when everything fits, got: %s", line)
 	}
@@ -98,7 +98,7 @@ func TestFormatSessionLine_Overflow_ShowsArrows(t *testing.T) {
 	sessions := makeSessions(paths, files)
 
 	// Active in the middle
-	line := formatSessionLine(windows, sessions, nil, 3, 80, nil)
+	line := formatSessionLine(windows, sessions, nil, 3, 80, nil, nil)
 
 	if !strings.Contains(line, "#[reverse]") {
 		t.Errorf("expected active highlight, got: %s", line)
@@ -124,7 +124,7 @@ func TestFormatSessionLine_Overflow_ActiveAtEdges(t *testing.T) {
 
 	// Active is first -- should have right arrow but no left
 	// Use width=40 to force overflow (6 entries * ~6 chars + separators)
-	line := formatSessionLine(windows, sessions, nil, 0, 40, nil)
+	line := formatSessionLine(windows, sessions, nil, 0, 40, nil, nil)
 	if strings.Contains(line, "\u25c0") {
 		t.Errorf("should not have left arrow when active is first, got: %s", line)
 	}
@@ -133,7 +133,7 @@ func TestFormatSessionLine_Overflow_ActiveAtEdges(t *testing.T) {
 	}
 
 	// Active is last -- should have left arrow but no right
-	line = formatSessionLine(windows, sessions, nil, len(names)-1, 40, nil)
+	line = formatSessionLine(windows, sessions, nil, len(names)-1, 40, nil, nil)
 	if !strings.Contains(line, "\u25c0") {
 		t.Errorf("should have left arrow when active is last, got: %s", line)
 	}
@@ -151,7 +151,7 @@ func TestFormatSessionLine_TruncatesLongNames(t *testing.T) {
 		[]string{"/home/user/long"},
 		[]string{"session-long.jsonl"},
 	)
-	line := formatSessionLine(windows, sessions, nil, 0, 200, nil)
+	line := formatSessionLine(windows, sessions, nil, 0, 200, nil, nil)
 
 	if strings.Contains(line, "a-very-long-project-name") {
 		t.Errorf("name should be truncated, got: %s", line)
@@ -171,7 +171,7 @@ func TestFormatSessionLine_WindowWithNoSession(t *testing.T) {
 		{}, // no session for orphan
 	}
 
-	line := formatSessionLine(windows, sessions, nil, 1, 200, nil)
+	line := formatSessionLine(windows, sessions, nil, 1, 200, nil, nil)
 	// orphan is active, highlighted
 	if !strings.Contains(line, "#[reverse]orphan#[noreverse]") {
 		t.Errorf("expected orphan highlighted, got: %s", line)
@@ -587,7 +587,7 @@ func TestRenderSessionLine_OnlyAttentionWindows(t *testing.T) {
 		}
 	}
 
-	line := formatSessionLine(filtered, filteredSessions, attnFlags, activeIdx, 200, nil)
+	line := formatSessionLine(filtered, filteredSessions, attnFlags, activeIdx, 200, nil, nil)
 
 	if strings.Contains(line, "alpha") {
 		t.Errorf("non-attention session alpha should not appear, got: %s", line)
@@ -902,7 +902,7 @@ func TestSessionEntryTextWithPriority(t *testing.T) {
 	s := claude.Session{}
 
 	// Default priority, needs attention
-	text := sessionEntryText(w, s, true, false, DefaultPriority)
+	text := sessionEntryText(w, s, true, false, false, DefaultPriority)
 	if strings.HasPrefix(text, "P") {
 		t.Errorf("default priority should not show prefix, got: %s", text)
 	}
@@ -911,7 +911,7 @@ func TestSessionEntryTextWithPriority(t *testing.T) {
 	}
 
 	// P0, needs attention
-	text = sessionEntryText(w, s, true, false, 0)
+	text = sessionEntryText(w, s, true, false, false, 0)
 	if !strings.HasPrefix(text, "P0 ") {
 		t.Errorf("P0 should show 'P0 ' prefix, got: %s", text)
 	}
@@ -920,11 +920,212 @@ func TestSessionEntryTextWithPriority(t *testing.T) {
 	}
 
 	// P3 (demoted), no attention
-	text = sessionEntryText(w, s, false, false, 3)
+	text = sessionEntryText(w, s, false, false, false, 3)
 	if !strings.HasPrefix(text, "P3 ") {
 		t.Errorf("P3 should show 'P3 ' prefix, got: %s", text)
 	}
 	if strings.Contains(text, "Attn") {
 		t.Errorf("no attention should not show Attn, got: %s", text)
+	}
+}
+
+func TestPinnedSessionAppearsInFilteredView(t *testing.T) {
+	pin := &PinStore{
+		entries: map[string]bool{
+			"session-b.jsonl": true,
+		},
+	}
+
+	fc := &FeedController{
+		allWindows: makeWindows(
+			[]string{"alpha", "beta", "gamma"},
+			[]string{"/a", "/b", "/c"},
+		),
+		stateByWindow: map[int]claude.Session{
+			0: {SessionFile: "session-a.jsonl"},
+			1: {SessionFile: "session-b.jsonl"},
+			2: {SessionFile: "session-c.jsonl"},
+		},
+		// Only alpha needs attention; beta is pinned but no attention
+		attention: map[string]bool{"session-a.jsonl": true},
+		dismissed: make(map[string]bool),
+		pin:       pin,
+	}
+
+	fc.updateDisplay()
+
+	// attentionQueue should contain alpha (attention) + beta (pinned)
+	if len(fc.attentionQueue) != 2 {
+		t.Fatalf("expected 2 items in display queue (1 attention + 1 pinned), got %d", len(fc.attentionQueue))
+	}
+	if fc.attentionCount != 1 {
+		t.Errorf("expected attentionCount=1, got %d", fc.attentionCount)
+	}
+	// First item should be attention, second should be pinned
+	if fc.attentionQueue[0] != 0 {
+		t.Errorf("expected first in queue = window 0 (attention), got %d", fc.attentionQueue[0])
+	}
+	if fc.attentionQueue[1] != 1 {
+		t.Errorf("expected second in queue = window 1 (pinned), got %d", fc.attentionQueue[1])
+	}
+}
+
+func TestPinnedAndAttentionShowsBothFlags(t *testing.T) {
+	w := WindowInfo{Index: "0", Name: "myproject", Path: "/proj"}
+	s := claude.Session{}
+
+	text := sessionEntryText(w, s, true, false, true, DefaultPriority)
+	if !strings.Contains(text, "Attn*") {
+		t.Errorf("expected Attn* flag, got: %s", text)
+	}
+	if !strings.Contains(text, "Pin") {
+		t.Errorf("expected Pin flag, got: %s", text)
+	}
+	if text != "myproject Attn* Pin" {
+		t.Errorf("expected 'myproject Attn* Pin', got: %s", text)
+	}
+}
+
+func TestPinOnlyShowsPinFlag(t *testing.T) {
+	w := WindowInfo{Index: "0", Name: "myproject", Path: "/proj"}
+	s := claude.Session{}
+
+	text := sessionEntryText(w, s, false, false, true, DefaultPriority)
+	if !strings.Contains(text, "Pin") {
+		t.Errorf("expected Pin flag, got: %s", text)
+	}
+	if strings.Contains(text, "Attn") {
+		t.Errorf("should not show Attn flag, got: %s", text)
+	}
+	if text != "myproject Pin" {
+		t.Errorf("expected 'myproject Pin', got: %s", text)
+	}
+}
+
+func TestTogglePin(t *testing.T) {
+	pin := &PinStore{
+		entries: make(map[string]bool),
+		path:    filepath.Join(t.TempDir(), "pin.json"),
+	}
+
+	fc := &FeedController{
+		allWindows: makeWindows(
+			[]string{"alpha"},
+			[]string{"/a"},
+		),
+		stateByWindow: map[int]claude.Session{
+			0: {SessionFile: "session-a.jsonl"},
+		},
+		attention: make(map[string]bool),
+		dismissed: make(map[string]bool),
+		pin:       pin,
+		cursor:    "0",
+	}
+
+	// Pin
+	fc.togglePin()
+	if !pin.IsPinned("session-a.jsonl") {
+		t.Errorf("expected session-a.jsonl to be pinned after toggle")
+	}
+
+	// Unpin
+	fc.togglePin()
+	if pin.IsPinned("session-a.jsonl") {
+		t.Errorf("expected session-a.jsonl to not be pinned after second toggle")
+	}
+}
+
+func TestAllClearOnlyWhenNoPinsAndNoAttention(t *testing.T) {
+	pin := &PinStore{
+		entries: map[string]bool{
+			"session-a.jsonl": true,
+		},
+	}
+
+	fc := &FeedController{
+		allWindows: makeWindows(
+			[]string{"alpha", "beta"},
+			[]string{"/a", "/b"},
+		),
+		stateByWindow: map[int]claude.Session{
+			0: {SessionFile: "session-a.jsonl"},
+			1: {SessionFile: "session-b.jsonl"},
+		},
+		// No attention needed
+		attention: make(map[string]bool),
+		dismissed: make(map[string]bool),
+		pin:       pin,
+	}
+
+	fc.updateDisplay()
+
+	// Queue should not be empty because alpha is pinned
+	if len(fc.attentionQueue) == 0 {
+		t.Errorf("expected non-empty queue due to pinned session")
+	}
+	if fc.attentionCount != 0 {
+		t.Errorf("expected attentionCount=0 (no attention items), got %d", fc.attentionCount)
+	}
+
+	// Now unpin and verify queue is empty
+	pin.Remove("session-a.jsonl")
+	fc.updateDisplay()
+
+	if len(fc.attentionQueue) != 0 {
+		t.Errorf("expected empty queue after unpin, got %d", len(fc.attentionQueue))
+	}
+}
+
+func TestPinStorePersistence(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "pin.json")
+
+	store := LoadPin(path)
+	store.Toggle("/tmp/session.jsonl")
+
+	store2 := LoadPin(path)
+	if !store2.IsPinned("/tmp/session.jsonl") {
+		t.Errorf("expected session to be pinned after reload")
+	}
+
+	store2.Toggle("/tmp/session.jsonl")
+	store3 := LoadPin(path)
+	if store3.IsPinned("/tmp/session.jsonl") {
+		t.Errorf("expected session to not be pinned after toggle off and reload")
+	}
+}
+
+func TestPinnedNotDuplicatedWhenAlsoNeedsAttention(t *testing.T) {
+	pin := &PinStore{
+		entries: map[string]bool{
+			"session-a.jsonl": true,
+		},
+	}
+
+	fc := &FeedController{
+		allWindows: makeWindows(
+			[]string{"alpha", "beta"},
+			[]string{"/a", "/b"},
+		),
+		stateByWindow: map[int]claude.Session{
+			0: {SessionFile: "session-a.jsonl"},
+			1: {SessionFile: "session-b.jsonl"},
+		},
+		// alpha needs attention AND is pinned — should appear only once
+		attention: map[string]bool{"session-a.jsonl": true},
+		dismissed: make(map[string]bool),
+		pin:       pin,
+	}
+
+	fc.updateDisplay()
+
+	count := 0
+	for _, wi := range fc.attentionQueue {
+		if wi == 0 {
+			count++
+		}
+	}
+	if count != 1 {
+		t.Errorf("expected pinned+attention session to appear once, appeared %d times", count)
 	}
 }

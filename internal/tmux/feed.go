@@ -26,6 +26,8 @@ type FeedController struct {
 	dismissed          map[string]bool        // session file paths dismissed by user, hidden until state changes
 	snooze             *SnoozeStore           // time-based snooze for sessions
 	priority           *PriorityStore         // P0-P4 priority levels for sessions
+	pin                *PinStore              // pinned sessions stay visible regardless of attention
+	attentionCount     int                    // count of attention-only items (excludes pinned-only)
 	fifoPath           string
 	origStatusRight    string
 	origStatusLeft     string
@@ -103,6 +105,12 @@ func (fc *FeedController) Run() error {
 	if fc.priority == nil {
 		home, _ := os.UserHomeDir()
 		fc.priority = LoadPriority(filepath.Join(home, ".config", "att", "priority.json"))
+	}
+
+	// Initialize pin store
+	if fc.pin == nil {
+		home, _ := os.UserHomeDir()
+		fc.pin = LoadPin(filepath.Join(home, ".config", "att", "pin.json"))
 	}
 
 	// Ensure base att tmux session exists
@@ -250,6 +258,8 @@ func (fc *FeedController) Run() error {
 				fc.killCurrent()
 			case cmd == "toggleall":
 				fc.toggleShowAll()
+			case cmd == "pin":
+				fc.togglePin()
 			case strings.HasPrefix(cmd, "priority "):
 				fc.setPriority(strings.TrimPrefix(cmd, "priority "))
 			case strings.HasPrefix(cmd, "snooze "):
@@ -404,6 +414,29 @@ func (fc *FeedController) updateDisplay() {
 			sj := fc.stateByWindow[fc.attentionQueue[j]]
 			return fc.priority.Get(si.SessionFile) < fc.priority.Get(sj.SessionFile)
 		})
+	}
+
+	// Save attention-only count, then append pinned-but-not-already-queued windows
+	fc.attentionCount = len(fc.attentionQueue)
+	if fc.pin != nil {
+		inQueue := make(map[int]bool)
+		for _, wi := range fc.attentionQueue {
+			inQueue[wi] = true
+		}
+		var pinned []int
+		for i := range fc.allWindows {
+			if s, ok := fc.stateByWindow[i]; ok && s.SessionFile != "" && fc.pin.IsPinned(s.SessionFile) && !inQueue[i] {
+				pinned = append(pinned, i)
+			}
+		}
+		if fc.priority != nil {
+			sort.SliceStable(pinned, func(a, b int) bool {
+				sa := fc.stateByWindow[pinned[a]]
+				sb := fc.stateByWindow[pinned[b]]
+				return fc.priority.Get(sa.SessionFile) < fc.priority.Get(sb.SessionFile)
+			})
+		}
+		fc.attentionQueue = append(fc.attentionQueue, pinned...)
 	}
 
 	// Clamp cursor: if the window it points to no longer exists, fall back
@@ -562,6 +595,23 @@ func (fc *FeedController) setPriority(levelStr string) {
 		return
 	}
 	fc.priority.Set(s.SessionFile, level)
+	fc.updateDisplay()
+	fc.updateStatusBar()
+}
+
+func (fc *FeedController) togglePin() {
+	if fc.pin == nil {
+		return
+	}
+	pos := fc.cursorPos()
+	if pos < 0 {
+		return
+	}
+	s, ok := fc.stateByWindow[pos]
+	if !ok || s.SessionFile == "" {
+		return
+	}
+	fc.pin.Toggle(s.SessionFile)
 	fc.updateDisplay()
 	fc.updateStatusBar()
 }
@@ -836,6 +886,9 @@ func (fc *FeedController) killCurrent() {
 		if fc.priority != nil {
 			fc.priority.Remove(s.SessionFile)
 		}
+		if fc.pin != nil {
+			fc.pin.Remove(s.SessionFile)
+		}
 	}
 
 	// Kill the tmux window (sends SIGHUP to claude, closing it)
@@ -884,7 +937,8 @@ func (fc *FeedController) updateStatusBar() {
 
 	w := fc.allWindows[pos]
 	name := strings.TrimSuffix(w.Name, "*")
-	attn := len(fc.attentionQueue)
+	attn := fc.attentionCount
+	displayCount := len(fc.attentionQueue) // includes pinned items
 
 	// Prepend priority indicator when non-default
 	if s, ok := fc.stateByWindow[pos]; ok && fc.priority != nil {
@@ -897,12 +951,15 @@ func (fc *FeedController) updateStatusBar() {
 	if fc.showAll {
 		status = fmt.Sprintf("att | %s [%d/%d] | ALL | M-a filter | ^Q quit",
 			name, pos+1, len(fc.allWindows))
-	} else if attn == 0 {
+	} else if displayCount == 0 {
 		status = fmt.Sprintf("att | %s [%d/%d] | All clear | M-a show all | ^Q quit",
 			name, pos+1, len(fc.allWindows))
-	} else {
+	} else if attn > 0 {
 		status = fmt.Sprintf("att | %s [%d/%d] | %d need attention | M-a show all | ^Q quit",
 			name, pos+1, len(fc.allWindows), attn)
+	} else {
+		status = fmt.Sprintf("att | %s [%d/%d] | %d pinned | M-a show all | ^Q quit",
+			name, pos+1, len(fc.allWindows), displayCount)
 	}
 	SetStatusRightForSession(fc.sessionName, status)
 }
@@ -918,6 +975,7 @@ func (fc *FeedController) bindKeys() {
 		{"C-q", "quit"},
 		{"M-a", "toggleall"},
 		{"M-d", "kill"},
+		{"M-i", "pin"},
 	} {
 		cmd := fmt.Sprintf("%s && echo %s > %s || true", guard, b.cmd, fifoTemplate)
 		if err := BindKey(b.key, cmd); err != nil {
@@ -995,7 +1053,7 @@ func (fc *FeedController) unbindKeys() {
 			return // other feed still running, keep bindings
 		}
 	}
-	for _, key := range []string{"M-]", "M-[", "M-Enter", "C-q", "M-a", "M-d", "M-z", "M-p", "M-f", "M-n"} {
+	for _, key := range []string{"M-]", "M-[", "M-Enter", "C-q", "M-a", "M-d", "M-i", "M-z", "M-p", "M-f", "M-n"} {
 		UnbindKey(key)
 	}
 }
