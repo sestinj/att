@@ -3,6 +3,7 @@ package claude
 import (
 	"bytes"
 	"encoding/json"
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
@@ -164,6 +165,105 @@ func extractCustomTitle(data []byte) string {
 		}
 	}
 	return title
+}
+
+// ExtractUserPrompts reads a session JSONL file and returns up to limit
+// user prompt texts. For large files, only the last 64KB is scanned to
+// keep it fast.
+func ExtractUserPrompts(sessionFile string, limit int) []string {
+	const maxTail = 64 * 1024
+
+	f, err := os.Open(sessionFile)
+	if err != nil {
+		return nil
+	}
+	defer f.Close()
+
+	fi, err := f.Stat()
+	if err != nil {
+		return nil
+	}
+
+	var data []byte
+	if fi.Size() <= maxTail {
+		data, err = io.ReadAll(f)
+		if err != nil {
+			return nil
+		}
+	} else {
+		// Read last 64KB for recent prompts
+		buf := make([]byte, maxTail)
+		n, err := f.ReadAt(buf, fi.Size()-maxTail)
+		if err != nil && err != io.EOF {
+			return nil
+		}
+		data = buf[:n]
+		// Skip first partial line
+		if idx := bytes.IndexByte(data, '\n'); idx >= 0 {
+			data = data[idx+1:]
+		}
+	}
+
+	var prompts []string
+	for _, line := range bytes.Split(data, []byte{'\n'}) {
+		if len(line) == 0 {
+			continue
+		}
+		// Fast pre-filter before JSON parsing
+		if !bytes.Contains(line, []byte(`"type":"user"`)) &&
+			!bytes.Contains(line, []byte(`"type": "user"`)) {
+			continue
+		}
+
+		var entry struct {
+			Type    string `json:"type"`
+			Message struct {
+				Content json.RawMessage `json:"content"`
+			} `json:"message"`
+		}
+		if json.Unmarshal(line, &entry) != nil || entry.Type != "user" {
+			continue
+		}
+
+		text := extractPromptText(entry.Message.Content)
+		if text != "" {
+			prompts = append(prompts, text)
+		}
+	}
+
+	if len(prompts) > limit {
+		prompts = prompts[len(prompts)-limit:]
+	}
+	return prompts
+}
+
+// extractPromptText extracts the user's text from a message content field,
+// which can be a JSON string or an array of content blocks.
+func extractPromptText(raw json.RawMessage) string {
+	if len(raw) == 0 {
+		return ""
+	}
+
+	// Try string first (most common for user prompts)
+	var s string
+	if json.Unmarshal(raw, &s) == nil {
+		return s
+	}
+
+	// Try array of content blocks
+	var blocks []struct {
+		Type string `json:"type"`
+		Text string `json:"text"`
+	}
+	if json.Unmarshal(raw, &blocks) == nil {
+		for _, b := range blocks {
+			if b.Type == "text" && b.Text != "" {
+				return b.Text
+			}
+		}
+	}
+
+	return ""
 }
 
 func parseMetadata(head string, session *Session) {

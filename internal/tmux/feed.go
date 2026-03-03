@@ -671,8 +671,8 @@ func (fc *FeedController) find(query string) {
 
 	// Interactive mode: use fzf in a tmux popup if available
 	if query == "" {
-		if _, err := exec.LookPath("fzf"); err == nil {
-			fc.findWithFzf()
+		if fzfPath, err := exec.LookPath("fzf"); err == nil {
+			fc.findWithFzf(fzfPath)
 			return
 		}
 	}
@@ -681,8 +681,8 @@ func (fc *FeedController) find(query string) {
 	fc.findWithMenu(query)
 }
 
-func (fc *FeedController) findWithFzf() {
-	// Build session list: index\tname\tpath
+func (fc *FeedController) findWithFzf(fzfPath string) {
+	// Build session list: index\tdisplay_name\tprompts (for search)
 	var lines []string
 	for i, w := range fc.allWindows {
 		s := fc.stateByWindow[i]
@@ -694,20 +694,52 @@ func (fc *FeedController) findWithFzf() {
 		if fc.attention[s.SessionFile] {
 			prefix = "* "
 		}
-		lines = append(lines, fmt.Sprintf("%s\t%s%s\t%s", w.Index, prefix, name, filepath.Base(w.Path)))
+
+		// Extract recent user prompts for search
+		var promptStr string
+		if s.SessionFile != "" {
+			prompts := claude.ExtractUserPrompts(s.SessionFile, 5)
+			var truncated []string
+			for _, p := range prompts {
+				// First line only, max 80 chars
+				if idx := strings.IndexByte(p, '\n'); idx >= 0 {
+					p = p[:idx]
+				}
+				if len(p) > 80 {
+					p = p[:80]
+				}
+				if p != "" {
+					truncated = append(truncated, p)
+				}
+			}
+			promptStr = strings.Join(truncated, " | ")
+		}
+
+		lines = append(lines, fmt.Sprintf("%s\t%s%s\t%s", w.Index, prefix, name, promptStr))
 	}
 
-	tmpFile := fc.fifoPath + ".sessions"
-	if err := os.WriteFile(tmpFile, []byte(strings.Join(lines, "\n")+"\n"), 0600); err != nil {
+	sessFile := fc.fifoPath + ".sessions"
+	if err := os.WriteFile(sessFile, []byte(strings.Join(lines, "\n")+"\n"), 0600); err != nil {
 		return
 	}
 
-	fzfCmd := fmt.Sprintf(
-		`fzf --prompt='Find: ' --with-nth=2.. --delimiter='\t' --reverse --no-info < '%s' | cut -f1 | while IFS= read -r idx; do echo "goto $idx" > '%s'; done; rm -f '%s'`,
-		tmpFile, fc.fifoPath, tmpFile,
+	// Write a wrapper script to avoid quoting issues with tmux display-popup.
+	// Uses absolute fzf path so the popup works even if PATH doesn't include it.
+	// --with-nth=2 displays only the session name; field 3 (prompts) is searched but hidden.
+	scriptFile := fc.fifoPath + ".find.sh"
+	script := fmt.Sprintf("#!/bin/sh\n"+
+		"idx=$('%s' --prompt='Find: ' --with-nth=2 --delimiter='\\t' --reverse --no-info < '%s')\n"+
+		"rc=$?\n"+
+		"rm -f '%s' '%s'\n"+
+		"[ $rc -eq 0 ] && idx=$(printf '%%s' \"$idx\" | cut -f1) && echo \"goto $idx\" > '%s'\n",
+		fzfPath, sessFile, sessFile, scriptFile, fc.fifoPath,
 	)
+	if err := os.WriteFile(scriptFile, []byte(script), 0700); err != nil {
+		os.Remove(sessFile)
+		return
+	}
 
-	exec.Command("tmux", "display-popup", "-t", fc.sessionName, "-w", "60%", "-h", "50%", "-E", fzfCmd).Run()
+	exec.Command("tmux", "display-popup", "-t", fc.sessionName, "-w", "60%", "-h", "50%", "-E", scriptFile).Run()
 }
 
 func (fc *FeedController) findWithMenu(query string) {
