@@ -4,6 +4,8 @@ A tmux-based attention manager for [Claude Code](https://docs.anthropic.com/en/d
 
 ![att demo](https://github.com/sestinj/att/assets/demo.gif)
 
+*An autonomous codebase built by the [Continued Software Factory](https://continue.dev/blueprint)*
+
 ## Why
 
 If you run Claude Code across multiple projects, you end up with a bunch of terminal tabs — some waiting for input, some working, some idle. `att` gives you a single dashboard that surfaces exactly which sessions need your attention, so you can stop polling tabs and start responding.
