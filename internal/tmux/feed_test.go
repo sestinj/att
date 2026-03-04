@@ -16,6 +16,7 @@ func makeWindows(names []string, paths []string) []WindowInfo {
 	var windows []WindowInfo
 	for i, name := range names {
 		windows = append(windows, WindowInfo{
+			ID:    fmt.Sprintf("@%d", i),
 			Index: string(rune('0' + i)),
 			Name:  name,
 			Path:  paths[i],
@@ -1349,7 +1350,7 @@ func TestSessionEntryTextWithPriority(t *testing.T) {
 func TestPinnedSessionAppearsInFilteredView(t *testing.T) {
 	pin := &PinStore{
 		entries: map[string]bool{
-			"/b": true,
+			"@1": true,
 		},
 	}
 
@@ -1441,21 +1442,21 @@ func TestTogglePin(t *testing.T) {
 
 	// Pin
 	fc.togglePin()
-	if !pin.IsPinned("/a") {
-		t.Errorf("expected /a to be pinned after toggle")
+	if !pin.IsPinned("@0") {
+		t.Errorf("expected @0 to be pinned after toggle")
 	}
 
 	// Unpin
 	fc.togglePin()
-	if pin.IsPinned("/a") {
-		t.Errorf("expected /a to not be pinned after second toggle")
+	if pin.IsPinned("@0") {
+		t.Errorf("expected @0 to not be pinned after second toggle")
 	}
 }
 
 func TestAllClearOnlyWhenNoPinsAndNoAttention(t *testing.T) {
 	pin := &PinStore{
 		entries: map[string]bool{
-			"/a": true,
+			"@0": true,
 		},
 	}
 
@@ -1485,7 +1486,7 @@ func TestAllClearOnlyWhenNoPinsAndNoAttention(t *testing.T) {
 	}
 
 	// Now unpin and verify queue is empty
-	pin.Remove("/a")
+	pin.Remove("@0")
 	fc.updateDisplay()
 
 	if len(fc.attentionQueue) != 0 {
@@ -1515,7 +1516,7 @@ func TestPinStorePersistence(t *testing.T) {
 func TestPinnedNotDuplicatedWhenAlsoNeedsAttention(t *testing.T) {
 	pin := &PinStore{
 		entries: map[string]bool{
-			"/a": true,
+			"@0": true,
 		},
 	}
 
@@ -1573,8 +1574,8 @@ func TestTogglePinInViewAllMode(t *testing.T) {
 
 	// Pin gamma (non-attention) while in view-all mode
 	fc.togglePin()
-	if !pin.IsPinned("/c") {
-		t.Errorf("expected /c to be pinned after toggle in view-all mode")
+	if !pin.IsPinned("@2") {
+		t.Errorf("expected @2 to be pinned after toggle in view-all mode")
 	}
 
 	// Switch to filtered mode — gamma should appear in the queue
@@ -1613,8 +1614,8 @@ func TestTogglePinWithoutSession(t *testing.T) {
 	}
 
 	fc.togglePin()
-	if !pin.IsPinned("/home/user/myproject") {
-		t.Errorf("expected window path to be pinned even without a session match")
+	if !pin.IsPinned("@0") {
+		t.Errorf("expected window ID to be pinned even without a session match")
 	}
 
 	// Verify it appears in the attention queue

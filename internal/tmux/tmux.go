@@ -29,6 +29,7 @@ func UnbindKey(key string) error {
 // Session/window management
 
 type WindowInfo struct {
+	ID    string // tmux window_id (e.g. "@123"), globally unique
 	Index string
 	Name  string
 	Path  string
@@ -110,7 +111,7 @@ func KillWindow(session, windowIndex string) error {
 
 func ListWindows(session string) ([]WindowInfo, error) {
 	out, err := exec.Command("tmux", "list-windows", "-t", session,
-		"-F", "#{window_index}\t#{window_name}\t#{pane_current_path}",
+		"-F", "#{window_id}\t#{window_index}\t#{window_name}\t#{pane_current_path}",
 	).Output()
 	if err != nil {
 		return nil, err
@@ -121,14 +122,15 @@ func ListWindows(session string) ([]WindowInfo, error) {
 		if line == "" {
 			continue
 		}
-		parts := strings.SplitN(line, "\t", 3)
-		if len(parts) < 3 {
+		parts := strings.SplitN(line, "\t", 4)
+		if len(parts) < 4 {
 			continue
 		}
 		windows = append(windows, WindowInfo{
-			Index: parts[0],
-			Name:  parts[1],
-			Path:  parts[2],
+			ID:    parts[0],
+			Index: parts[1],
+			Name:  parts[2],
+			Path:  parts[3],
 		})
 	}
 	return windows, nil

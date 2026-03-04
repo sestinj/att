@@ -9,11 +9,11 @@ import (
 )
 
 // PinStore manages a set of pinned windows. Pinned windows remain visible
-// in the filtered bar regardless of their attention state. Keyed by window
-// path (pane_current_path) so pins persist across Claude sessions.
+// in the filtered bar regardless of their attention state. Keyed by tmux
+// window_id (e.g. "@123") which is globally unique per window.
 type PinStore struct {
 	mu      sync.Mutex
-	entries map[string]bool // window path → pinned
+	entries map[string]bool // window_id → pinned
 	path    string
 }
 
