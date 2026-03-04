@@ -1349,7 +1349,7 @@ func TestSessionEntryTextWithPriority(t *testing.T) {
 func TestPinnedSessionAppearsInFilteredView(t *testing.T) {
 	pin := &PinStore{
 		entries: map[string]bool{
-			"session-b.jsonl": true,
+			"/b": true,
 		},
 	}
 
@@ -1441,21 +1441,21 @@ func TestTogglePin(t *testing.T) {
 
 	// Pin
 	fc.togglePin()
-	if !pin.IsPinned("session-a.jsonl") {
-		t.Errorf("expected session-a.jsonl to be pinned after toggle")
+	if !pin.IsPinned("/a") {
+		t.Errorf("expected /a to be pinned after toggle")
 	}
 
 	// Unpin
 	fc.togglePin()
-	if pin.IsPinned("session-a.jsonl") {
-		t.Errorf("expected session-a.jsonl to not be pinned after second toggle")
+	if pin.IsPinned("/a") {
+		t.Errorf("expected /a to not be pinned after second toggle")
 	}
 }
 
 func TestAllClearOnlyWhenNoPinsAndNoAttention(t *testing.T) {
 	pin := &PinStore{
 		entries: map[string]bool{
-			"session-a.jsonl": true,
+			"/a": true,
 		},
 	}
 
@@ -1485,7 +1485,7 @@ func TestAllClearOnlyWhenNoPinsAndNoAttention(t *testing.T) {
 	}
 
 	// Now unpin and verify queue is empty
-	pin.Remove("session-a.jsonl")
+	pin.Remove("/a")
 	fc.updateDisplay()
 
 	if len(fc.attentionQueue) != 0 {
@@ -1515,7 +1515,7 @@ func TestPinStorePersistence(t *testing.T) {
 func TestPinnedNotDuplicatedWhenAlsoNeedsAttention(t *testing.T) {
 	pin := &PinStore{
 		entries: map[string]bool{
-			"session-a.jsonl": true,
+			"/a": true,
 		},
 	}
 
@@ -1573,8 +1573,8 @@ func TestTogglePinInViewAllMode(t *testing.T) {
 
 	// Pin gamma (non-attention) while in view-all mode
 	fc.togglePin()
-	if !pin.IsPinned("session-c.jsonl") {
-		t.Errorf("expected session-c.jsonl to be pinned after toggle in view-all mode")
+	if !pin.IsPinned("/c") {
+		t.Errorf("expected /c to be pinned after toggle in view-all mode")
 	}
 
 	// Switch to filtered mode — gamma should appear in the queue
@@ -1588,6 +1588,39 @@ func TestTogglePinInViewAllMode(t *testing.T) {
 	}
 	if !found {
 		t.Errorf("expected pinned gamma (window 2) in attention queue after switching to filtered mode, queue=%v", fc.attentionQueue)
+	}
+}
+
+func TestTogglePinWithoutSession(t *testing.T) {
+	// Pinning should work even when no Claude session is matched to the window.
+	// This was the core bug: windows using worktrees had no session match,
+	// making pin impossible.
+	pin := &PinStore{
+		entries: make(map[string]bool),
+		path:    filepath.Join(t.TempDir(), "pin.json"),
+	}
+
+	fc := &FeedController{
+		allWindows: makeWindows(
+			[]string{"myproject"},
+			[]string{"/home/user/myproject"},
+		),
+		stateByWindow: map[int]claude.Session{}, // no session matched
+		attention:     make(map[string]bool),
+		dismissed:     make(map[string]bool),
+		pin:           pin,
+		cursor:        "0",
+	}
+
+	fc.togglePin()
+	if !pin.IsPinned("/home/user/myproject") {
+		t.Errorf("expected window path to be pinned even without a session match")
+	}
+
+	// Verify it appears in the attention queue
+	fc.updateDisplay()
+	if len(fc.attentionQueue) == 0 {
+		t.Errorf("expected pinned window in attention queue even without session")
 	}
 }
 

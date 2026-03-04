@@ -40,8 +40,9 @@ func (fc *FeedController) renderSessionLine() {
 			}
 			snoozedFlags = append(snoozedFlags, isSnoozed)
 			isPinned := false
-			if s.SessionFile != "" && fc.pin != nil {
-				isPinned = fc.pin.IsPinned(s.SessionFile)
+			w := fc.allWindows[i]
+			if w.Path != "" && fc.pin != nil {
+				isPinned = fc.pin.IsPinned(w.Path)
 			}
 			pinnedFlags = append(pinnedFlags, isPinned)
 			p := DefaultPriority
@@ -83,8 +84,9 @@ func (fc *FeedController) renderSessionLine() {
 		}
 		snoozedFlags = append(snoozedFlags, isSnoozed)
 		isPinned := false
-		if s.SessionFile != "" && fc.pin != nil {
-			isPinned = fc.pin.IsPinned(s.SessionFile)
+		w := fc.allWindows[wi]
+		if w.Path != "" && fc.pin != nil {
+			isPinned = fc.pin.IsPinned(w.Path)
 		}
 		pinnedFlags = append(pinnedFlags, isPinned)
 		p := DefaultPriority

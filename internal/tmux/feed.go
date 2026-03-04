@@ -481,8 +481,8 @@ func (fc *FeedController) updateDisplay() {
 			inQueue[wi] = true
 		}
 		var pinned []int
-		for i := range fc.allWindows {
-			if s, ok := fc.stateByWindow[i]; ok && s.SessionFile != "" && fc.pin.IsPinned(s.SessionFile) && !inQueue[i] {
+		for i, w := range fc.allWindows {
+			if w.Path != "" && fc.pin.IsPinned(w.Path) && !inQueue[i] {
 				pinned = append(pinned, i)
 			}
 		}
@@ -678,11 +678,11 @@ func (fc *FeedController) togglePin() {
 	if pos < 0 {
 		return
 	}
-	s, ok := fc.stateByWindow[pos]
-	if !ok || s.SessionFile == "" {
+	w := fc.allWindows[pos]
+	if w.Path == "" {
 		return
 	}
-	fc.pin.Toggle(s.SessionFile)
+	fc.pin.Toggle(w.Path)
 	fc.cursor = targetIdx
 	fc.updateDisplay()
 	fc.updateStatusBar()
@@ -958,9 +958,9 @@ func (fc *FeedController) killCurrent() {
 		if fc.priority != nil {
 			fc.priority.Remove(s.SessionFile)
 		}
-		if fc.pin != nil {
-			fc.pin.Remove(s.SessionFile)
-		}
+	}
+	if fc.pin != nil && w.Path != "" {
+		fc.pin.Remove(w.Path)
 	}
 
 	// Kill the tmux window (sends SIGHUP to claude, closing it)

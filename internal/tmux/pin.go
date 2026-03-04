@@ -8,11 +8,12 @@ import (
 	"sync"
 )
 
-// PinStore manages a set of pinned sessions. Pinned sessions remain visible
-// in the filtered bar regardless of their attention state.
+// PinStore manages a set of pinned windows. Pinned windows remain visible
+// in the filtered bar regardless of their attention state. Keyed by window
+// path (pane_current_path) so pins persist across Claude sessions.
 type PinStore struct {
 	mu      sync.Mutex
-	entries map[string]bool // session file path → pinned
+	entries map[string]bool // window path → pinned
 	path    string
 }
 
