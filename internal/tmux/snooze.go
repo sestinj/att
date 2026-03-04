@@ -2,17 +2,19 @@ package tmux
 
 import (
 	"encoding/json"
+	"log"
 	"os"
 	"path/filepath"
 	"sync"
 	"time"
 )
 
-// SnoozeStore manages time-based snoozing of sessions. Snoozed sessions
+// SnoozeStore manages time-based snoozing of windows. Snoozed windows
 // are excluded from the attention queue until their snooze expires.
+// Keyed by tmux window_id.
 type SnoozeStore struct {
 	mu      sync.Mutex
-	entries map[string]time.Time // session file path → expiry
+	entries map[string]time.Time // window_id → expiry
 	path    string
 }
 
@@ -27,7 +29,6 @@ func LoadSnooze(path string) *SnoozeStore {
 	if err != nil {
 		return s
 	}
-	// File stores string timestamps keyed by session file path
 	var raw map[string]string
 	if err := json.Unmarshal(data, &raw); err != nil {
 		return s
@@ -69,33 +70,35 @@ func (s *SnoozeStore) saveLocked() {
 	if err := os.WriteFile(tmp, data, 0644); err != nil {
 		return
 	}
-	os.Rename(tmp, s.path)
+	if err := os.Rename(tmp, s.path); err != nil {
+		log.Printf("att: snooze save rename failed: %v", err)
+	}
 }
 
-// Snooze marks a session as snoozed until the given time.
-func (s *SnoozeStore) Snooze(sessionFile string, until time.Time) {
+// Snooze marks a window as snoozed until the given time.
+func (s *SnoozeStore) Snooze(windowID string, until time.Time) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	s.entries[sessionFile] = until
+	s.entries[windowID] = until
 	s.saveLocked()
 }
 
-// IsSnoozed returns true if the session is snoozed and the snooze has not expired.
-func (s *SnoozeStore) IsSnoozed(sessionFile string) bool {
+// IsSnoozed returns true if the window is snoozed and the snooze has not expired.
+func (s *SnoozeStore) IsSnoozed(windowID string) bool {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	expiry, ok := s.entries[sessionFile]
+	expiry, ok := s.entries[windowID]
 	if !ok {
 		return false
 	}
 	return time.Now().Before(expiry)
 }
 
-// Unsnooze removes the snooze for a session.
-func (s *SnoozeStore) Unsnooze(sessionFile string) {
+// Unsnooze removes the snooze for a window.
+func (s *SnoozeStore) Unsnooze(windowID string) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	delete(s.entries, sessionFile)
+	delete(s.entries, windowID)
 	s.saveLocked()
 }
 

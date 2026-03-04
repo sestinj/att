@@ -2,6 +2,7 @@ package tmux
 
 import (
 	"encoding/json"
+	"log"
 	"os"
 	"path/filepath"
 	"sort"
@@ -38,33 +39,33 @@ func LoadPin(path string) *PinStore {
 	return s
 }
 
-// IsPinned returns whether a session is pinned.
-func (s *PinStore) IsPinned(sessionFile string) bool {
+// IsPinned returns whether a window is pinned.
+func (s *PinStore) IsPinned(windowID string) bool {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	return s.entries[sessionFile]
+	return s.entries[windowID]
 }
 
-// Toggle toggles the pin state for a session and persists to disk.
+// Toggle toggles the pin state for a window and persists to disk.
 // Returns the new pin state.
-func (s *PinStore) Toggle(sessionFile string) bool {
+func (s *PinStore) Toggle(windowID string) bool {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if s.entries[sessionFile] {
-		delete(s.entries, sessionFile)
+	if s.entries[windowID] {
+		delete(s.entries, windowID)
 		s.saveLocked()
 		return false
 	}
-	s.entries[sessionFile] = true
+	s.entries[windowID] = true
 	s.saveLocked()
 	return true
 }
 
-// Remove removes the pin for a session and persists to disk.
-func (s *PinStore) Remove(sessionFile string) {
+// Remove removes the pin for a window and persists to disk.
+func (s *PinStore) Remove(windowID string) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	delete(s.entries, sessionFile)
+	delete(s.entries, windowID)
 	s.saveLocked()
 }
 
@@ -86,5 +87,7 @@ func (s *PinStore) saveLocked() {
 	if err := os.WriteFile(tmp, data, 0644); err != nil {
 		return
 	}
-	os.Rename(tmp, s.path)
+	if err := os.Rename(tmp, s.path); err != nil {
+		log.Printf("att: pin save rename failed: %v", err)
+	}
 }

@@ -23,10 +23,10 @@ type FeedController struct {
 	attention          map[string]bool        // transcript paths needing attention (from attention dir)
 	cursor             string                 // tmux window Index (e.g. "0", "3")
 	attentionQueue     []int                  // indices into allWindows for windows needing attention
-	dismissed          map[string]bool        // session file paths dismissed by user, hidden until state changes
-	snooze             *SnoozeStore           // time-based snooze for sessions
-	priority           *PriorityStore         // P0-P4 priority levels for sessions
-	pin                *PinStore              // pinned sessions stay visible regardless of attention
+	dismissed          map[string]bool        // window IDs dismissed by user, hidden until state changes
+	snooze             *SnoozeStore           // time-based snooze for windows
+	priority           *PriorityStore         // P0-P4 priority levels for windows
+	pin                *PinStore              // pinned windows stay visible regardless of attention
 	attentionCount     int                    // count of attention-only items (excludes pinned-only)
 	promptCache        map[string]promptCacheEntry // pre-computed prompt text keyed by session file
 	fifoPath           string
