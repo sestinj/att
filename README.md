@@ -4,7 +4,7 @@ A tmux-based attention manager for [Claude Code](https://docs.anthropic.com/en/d
 
 ![att demo](https://github.com/sestinj/att/assets/demo.gif)
 
-*An autonomous codebase built by the [Continued Software Factory](https://continue.dev/blueprint)*
+*An autonomous codebase built by the [Continue Software Factory](https://continue.dev/blueprint)*
 
 ## Why
 
