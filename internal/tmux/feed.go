@@ -424,17 +424,17 @@ func (fc *FeedController) updateDisplay() {
 		}
 	}
 
-	// Clear dismissed sessions that no longer need attention
-	for sessionFile := range fc.dismissed {
+	// Clear dismissed windows that no longer need attention
+	for wID := range fc.dismissed {
 		stillNeeded := false
-		for i, s := range fc.stateByWindow {
-			if s.SessionFile == sessionFile && needsAttention[i] {
+		for i, w := range fc.allWindows {
+			if w.ID == wID && needsAttention[i] {
 				stillNeeded = true
 				break
 			}
 		}
 		if !stillNeeded {
-			delete(fc.dismissed, sessionFile)
+			delete(fc.dismissed, wID)
 		}
 	}
 
@@ -444,13 +444,10 @@ func (fc *FeedController) updateDisplay() {
 		hasAsterisk := strings.HasSuffix(w.Name, "*")
 		needs := needsAttention[i]
 
-		isDismissed := false
+		isDismissed := fc.dismissed[w.ID]
 		isSnoozed := false
-		if s, ok := fc.stateByWindow[i]; ok {
-			isDismissed = fc.dismissed[s.SessionFile]
-			if fc.snooze != nil {
-				isSnoozed = fc.snooze.IsSnoozed(s.SessionFile)
-			}
+		if fc.snooze != nil {
+			isSnoozed = fc.snooze.IsSnoozed(w.ID)
 		}
 
 		if needs && !isDismissed && !isSnoozed {
@@ -467,9 +464,9 @@ func (fc *FeedController) updateDisplay() {
 	// SliceStable preserves window-index order within the same priority level.
 	if fc.priority != nil {
 		sort.SliceStable(fc.attentionQueue, func(i, j int) bool {
-			si := fc.stateByWindow[fc.attentionQueue[i]]
-			sj := fc.stateByWindow[fc.attentionQueue[j]]
-			return fc.priority.Get(si.SessionFile) < fc.priority.Get(sj.SessionFile)
+			wi := fc.allWindows[fc.attentionQueue[i]]
+			wj := fc.allWindows[fc.attentionQueue[j]]
+			return fc.priority.Get(wi.ID) < fc.priority.Get(wj.ID)
 		})
 	}
 
@@ -488,9 +485,9 @@ func (fc *FeedController) updateDisplay() {
 		}
 		if fc.priority != nil {
 			sort.SliceStable(pinned, func(a, b int) bool {
-				sa := fc.stateByWindow[pinned[a]]
-				sb := fc.stateByWindow[pinned[b]]
-				return fc.priority.Get(sa.SessionFile) < fc.priority.Get(sb.SessionFile)
+				wa := fc.allWindows[pinned[a]]
+				wb := fc.allWindows[pinned[b]]
+				return fc.priority.Get(wa.ID) < fc.priority.Get(wb.ID)
 			})
 		}
 		fc.attentionQueue = append(fc.attentionQueue, pinned...)
@@ -590,10 +587,11 @@ func (fc *FeedController) dismissAndAdvance() {
 		return
 	}
 
-	// Add current window's session to dismissed set
+	// Add current window to dismissed set
 	if pos := fc.cursorPos(); pos >= 0 {
-		if s, ok := fc.stateByWindow[pos]; ok && s.SessionFile != "" {
-			fc.dismissed[s.SessionFile] = true
+		w := fc.allWindows[pos]
+		if w.ID != "" {
+			fc.dismissed[w.ID] = true
 		}
 	}
 
@@ -605,13 +603,12 @@ func (fc *FeedController) snoozeAndAdvance(durStr string) {
 		return
 	}
 
-	// Get current window's session file
 	pos := fc.cursorPos()
 	if pos < 0 {
 		return
 	}
-	s, ok := fc.stateByWindow[pos]
-	if !ok || s.SessionFile == "" {
+	w := fc.allWindows[pos]
+	if w.ID == "" {
 		return
 	}
 
@@ -631,7 +628,7 @@ func (fc *FeedController) snoozeAndAdvance(durStr string) {
 		until = time.Now().Add(dur)
 	}
 
-	fc.snooze.Snooze(s.SessionFile, until)
+	fc.snooze.Snooze(w.ID, until)
 	fc.removeFromQueueAndAdvance()
 }
 
@@ -647,11 +644,11 @@ func (fc *FeedController) setPriority(levelStr string) {
 	if pos < 0 {
 		return
 	}
-	s, ok := fc.stateByWindow[pos]
-	if !ok || s.SessionFile == "" {
+	w := fc.allWindows[pos]
+	if w.ID == "" {
 		return
 	}
-	fc.priority.Set(s.SessionFile, level)
+	fc.priority.Set(w.ID, level)
 	fc.updateDisplay()
 	fc.updateStatusBar()
 }
@@ -949,18 +946,18 @@ func (fc *FeedController) killCurrent() {
 	}
 	w := fc.allWindows[pos]
 
-	// Clear any dismissed/snoozed/priority state for this window's session
-	if s, ok := fc.stateByWindow[pos]; ok && s.SessionFile != "" {
-		delete(fc.dismissed, s.SessionFile)
+	// Clear any dismissed/snoozed/priority/pin state for this window
+	if w.ID != "" {
+		delete(fc.dismissed, w.ID)
 		if fc.snooze != nil {
-			fc.snooze.Unsnooze(s.SessionFile)
+			fc.snooze.Unsnooze(w.ID)
 		}
 		if fc.priority != nil {
-			fc.priority.Remove(s.SessionFile)
+			fc.priority.Remove(w.ID)
 		}
-	}
-	if fc.pin != nil && w.ID != "" {
-		fc.pin.Remove(w.ID)
+		if fc.pin != nil {
+			fc.pin.Remove(w.ID)
+		}
 	}
 
 	// Kill the tmux window (sends SIGHUP to claude, closing it)
@@ -1013,8 +1010,8 @@ func (fc *FeedController) updateStatusBar() {
 	displayCount := len(fc.attentionQueue) // includes pinned items
 
 	// Prepend priority indicator when non-default
-	if s, ok := fc.stateByWindow[pos]; ok && fc.priority != nil {
-		if p := fc.priority.Get(s.SessionFile); p != DefaultPriority {
+	if fc.priority != nil {
+		if p := fc.priority.Get(w.ID); p != DefaultPriority {
 			name = fmt.Sprintf("P%d %s", p, name)
 		}
 	}

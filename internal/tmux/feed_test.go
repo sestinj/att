@@ -282,8 +282,8 @@ func TestDismissAndAdvance(t *testing.T) {
 	if fc.cursor != "2" {
 		t.Errorf("expected cursor=\"2\" (gamma), got cursor=%s", fc.cursor)
 	}
-	if !fc.dismissed["session-a.jsonl"] {
-		t.Errorf("expected session-a.jsonl to be in dismissed set")
+	if !fc.dismissed["@0"] {
+		t.Errorf("expected @0 to be in dismissed set")
 	}
 	if len(fc.attentionQueue) != 2 {
 		t.Errorf("expected 2 items in queue, got %d", len(fc.attentionQueue))
@@ -300,8 +300,8 @@ func TestDismissAndAdvance(t *testing.T) {
 
 	// Dismiss from delta -> queue empty
 	fc.dismissAndAdvance()
-	if !fc.dismissed["session-d.jsonl"] {
-		t.Errorf("expected session-d.jsonl to be in dismissed set")
+	if !fc.dismissed["@3"] {
+		t.Errorf("expected @3 to be in dismissed set")
 	}
 	if len(fc.attentionQueue) != 0 {
 		t.Errorf("expected 0 items in queue, got %d", len(fc.attentionQueue))
@@ -324,8 +324,8 @@ func TestDismissAndAdvance_SingleItem(t *testing.T) {
 	}
 
 	fc.dismissAndAdvance()
-	if !fc.dismissed["session-b.jsonl"] {
-		t.Errorf("expected session-b.jsonl to be in dismissed set")
+	if !fc.dismissed["@1"] {
+		t.Errorf("expected @1 to be in dismissed set")
 	}
 	if len(fc.attentionQueue) != 0 {
 		t.Errorf("expected empty queue, got %d", len(fc.attentionQueue))
@@ -353,8 +353,8 @@ func TestDismissAndAdvance_CursorNotInQueue(t *testing.T) {
 	if fc.cursor != "1" {
 		t.Errorf("expected cursor=\"1\" (first in queue), got cursor=%s", fc.cursor)
 	}
-	if !fc.dismissed["session-a.jsonl"] {
-		t.Errorf("expected session-a.jsonl to be in dismissed set")
+	if !fc.dismissed["@0"] {
+		t.Errorf("expected @0 to be in dismissed set")
 	}
 	if len(fc.attentionQueue) != 2 {
 		t.Errorf("expected 2 items in queue, got %d", len(fc.attentionQueue))
@@ -377,7 +377,7 @@ func TestDismissedClearedWhenAttentionClears(t *testing.T) {
 		attention:      map[string]bool{"session-b.jsonl": true, "session-c.jsonl": true},
 		attentionQueue: []int{0, 1, 2},
 		cursor:         "0",
-		dismissed:      map[string]bool{"session-a.jsonl": true, "session-b.jsonl": true},
+		dismissed:      map[string]bool{"@0": true, "@1": true},
 	}
 
 	// Build per-window attention (same logic as updateDisplay)
@@ -388,42 +388,43 @@ func TestDismissedClearedWhenAttentionClears(t *testing.T) {
 		}
 	}
 
-	// Clear dismissed sessions that no longer need attention
-	for sessionFile := range fc.dismissed {
+	// Clear dismissed windows that no longer need attention
+	for wID := range fc.dismissed {
 		stillNeeded := false
-		for i, s := range fc.stateByWindow {
-			if s.SessionFile == sessionFile && needsAttention[i] {
+		for i, w := range fc.allWindows {
+			if w.ID == wID && needsAttention[i] {
 				stillNeeded = true
 				break
 			}
 		}
 		if !stillNeeded {
-			delete(fc.dismissed, sessionFile)
+			delete(fc.dismissed, wID)
 		}
 	}
 
-	// session-a: not in attention set → should be cleared from dismissed
-	if fc.dismissed["session-a.jsonl"] {
-		t.Errorf("expected session-a cleared from dismissed (no longer needs attention)")
+	// window @0 (alpha): not in attention set → should be cleared from dismissed
+	if fc.dismissed["@0"] {
+		t.Errorf("expected @0 cleared from dismissed (no longer needs attention)")
 	}
-	// session-b: still needs attention → should remain dismissed
-	if !fc.dismissed["session-b.jsonl"] {
-		t.Errorf("expected session-b to remain dismissed")
+	// window @1 (beta): still needs attention → should remain dismissed
+	if !fc.dismissed["@1"] {
+		t.Errorf("expected @1 to remain dismissed")
 	}
 }
 
 func TestSnoozeExcludesFromAttentionQueue(t *testing.T) {
+	windows := makeWindows(
+		[]string{"alpha", "beta", "gamma"},
+		[]string{"/a", "/b", "/c"},
+	)
 	snooze := &SnoozeStore{
 		entries: map[string]time.Time{
-			"session-b.jsonl": time.Now().Add(1 * time.Hour),
+			windows[1].ID: time.Now().Add(1 * time.Hour),
 		},
 	}
 
 	fc := &FeedController{
-		allWindows: makeWindows(
-			[]string{"alpha", "beta", "gamma"},
-			[]string{"/a", "/b", "/c"},
-		),
+		allWindows: windows,
 		stateByWindow: map[int]claude.Session{
 			0: {SessionFile: "session-a.jsonl"},
 			1: {SessionFile: "session-b.jsonl"},
@@ -447,17 +448,18 @@ func TestSnoozeExcludesFromAttentionQueue(t *testing.T) {
 }
 
 func TestSnoozeExpiredRestoresToQueue(t *testing.T) {
+	windows := makeWindows(
+		[]string{"alpha", "beta"},
+		[]string{"/a", "/b"},
+	)
 	snooze := &SnoozeStore{
 		entries: map[string]time.Time{
-			"session-b.jsonl": time.Now().Add(-1 * time.Minute),
+			windows[1].ID: time.Now().Add(-1 * time.Minute),
 		},
 	}
 
 	fc := &FeedController{
-		allWindows: makeWindows(
-			[]string{"alpha", "beta"},
-			[]string{"/a", "/b"},
-		),
+		allWindows: windows,
 		stateByWindow: map[int]claude.Session{
 			0: {SessionFile: "session-a.jsonl"},
 			1: {SessionFile: "session-b.jsonl"},
@@ -475,16 +477,17 @@ func TestSnoozeExpiredRestoresToQueue(t *testing.T) {
 }
 
 func TestSnoozedVisibleInShowAll(t *testing.T) {
-	snooze := &SnoozeStore{
-		entries: map[string]time.Time{
-			"session-b.jsonl": time.Now().Add(1 * time.Hour),
-		},
-	}
-
 	windows := makeWindows(
 		[]string{"alpha", "beta"},
 		[]string{"/a", "/b"},
 	)
+
+	snooze := &SnoozeStore{
+		entries: map[string]time.Time{
+			windows[1].ID: time.Now().Add(1 * time.Hour),
+		},
+	}
+
 	sessions := []claude.Session{
 		{WorkspacePath: "/a"},
 		{WorkspacePath: "/b", SessionFile: "session-b.jsonl"},
@@ -493,9 +496,7 @@ func TestSnoozedVisibleInShowAll(t *testing.T) {
 
 	snoozedFlags := make([]bool, len(windows))
 	for i := range windows {
-		if i < len(sessions) {
-			snoozedFlags[i] = snooze.IsSnoozed(sessions[i].SessionFile)
-		}
+		snoozedFlags[i] = snooze.IsSnoozed(windows[i].ID)
 	}
 
 	line := formatSessionLine(windows, sessions, attn, 1, 200, snoozedFlags, nil)
@@ -552,8 +553,8 @@ func TestSnoozeAndAdvance(t *testing.T) {
 	if fc.cursor != "1" {
 		t.Errorf("expected cursor=\"1\" (beta), got cursor=%s", fc.cursor)
 	}
-	if !snooze.IsSnoozed("session-a.jsonl") {
-		t.Errorf("expected session-a.jsonl to be snoozed")
+	if !snooze.IsSnoozed("@0") {
+		t.Errorf("expected @0 to be snoozed")
 	}
 	if len(fc.attentionQueue) != 2 {
 		t.Errorf("expected 2 items in queue, got %d", len(fc.attentionQueue))
@@ -739,19 +740,20 @@ func TestKillCurrent_KillLast(t *testing.T) {
 }
 
 func TestPrioritySortsAttentionQueue(t *testing.T) {
+	windows := makeWindows(
+		[]string{"alpha", "beta", "gamma"},
+		[]string{"/a", "/b", "/c"},
+	)
 	priority := &PriorityStore{
 		entries: map[string]int{
-			"session-a.jsonl": 2,
-			"session-c.jsonl": 0,
+			windows[0].ID: 2,
+			windows[2].ID: 0,
 		},
 		path: filepath.Join(t.TempDir(), "priority.json"),
 	}
 
 	fc := &FeedController{
-		allWindows: makeWindows(
-			[]string{"alpha", "beta", "gamma"},
-			[]string{"/a", "/b", "/c"},
-		),
+		allWindows: windows,
 		stateByWindow: map[int]claude.Session{
 			0: {SessionFile: "session-a.jsonl"},
 			1: {SessionFile: "session-b.jsonl"},
@@ -780,20 +782,21 @@ func TestPrioritySortsAttentionQueue(t *testing.T) {
 }
 
 func TestPrioritySameLevelPreservesWindowOrder(t *testing.T) {
+	windows := makeWindows(
+		[]string{"alpha", "beta", "gamma"},
+		[]string{"/a", "/b", "/c"},
+	)
 	priority := &PriorityStore{
 		entries: map[string]int{
-			"session-a.jsonl": 1,
-			"session-b.jsonl": 1,
-			"session-c.jsonl": 1,
+			windows[0].ID: 1,
+			windows[1].ID: 1,
+			windows[2].ID: 1,
 		},
 		path: filepath.Join(t.TempDir(), "priority.json"),
 	}
 
 	fc := &FeedController{
-		allWindows: makeWindows(
-			[]string{"alpha", "beta", "gamma"},
-			[]string{"/a", "/b", "/c"},
-		),
+		allWindows: windows,
 		stateByWindow: map[int]claude.Session{
 			0: {SessionFile: "session-a.jsonl"},
 			1: {SessionFile: "session-b.jsonl"},

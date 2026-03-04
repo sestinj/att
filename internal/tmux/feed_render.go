@@ -32,22 +32,22 @@ func (fc *FeedController) renderSessionLine() {
 		var priorities []int
 		for i := range fc.allWindows {
 			s := fc.stateByWindow[i]
+			w := fc.allWindows[i]
 			sessions = append(sessions, s)
 			attnFlags = append(attnFlags, fc.attention[s.SessionFile])
 			isSnoozed := false
-			if s.SessionFile != "" && fc.snooze != nil {
-				isSnoozed = fc.snooze.IsSnoozed(s.SessionFile)
+			if w.ID != "" && fc.snooze != nil {
+				isSnoozed = fc.snooze.IsSnoozed(w.ID)
 			}
 			snoozedFlags = append(snoozedFlags, isSnoozed)
 			isPinned := false
-			w := fc.allWindows[i]
 			if w.ID != "" && fc.pin != nil {
 				isPinned = fc.pin.IsPinned(w.ID)
 			}
 			pinnedFlags = append(pinnedFlags, isPinned)
 			p := DefaultPriority
-			if s.SessionFile != "" && fc.priority != nil {
-				p = fc.priority.Get(s.SessionFile)
+			if w.ID != "" && fc.priority != nil {
+				p = fc.priority.Get(w.ID)
 			}
 			priorities = append(priorities, p)
 		}
@@ -79,19 +79,19 @@ func (fc *FeedController) renderSessionLine() {
 			activeIdx = i
 		}
 		isSnoozed := false
-		if s.SessionFile != "" && fc.snooze != nil {
-			isSnoozed = fc.snooze.IsSnoozed(s.SessionFile)
+		w := fc.allWindows[wi]
+		if w.ID != "" && fc.snooze != nil {
+			isSnoozed = fc.snooze.IsSnoozed(w.ID)
 		}
 		snoozedFlags = append(snoozedFlags, isSnoozed)
 		isPinned := false
-		w := fc.allWindows[wi]
 		if w.ID != "" && fc.pin != nil {
 			isPinned = fc.pin.IsPinned(w.ID)
 		}
 		pinnedFlags = append(pinnedFlags, isPinned)
 		p := DefaultPriority
-		if s.SessionFile != "" && fc.priority != nil {
-			p = fc.priority.Get(s.SessionFile)
+		if w.ID != "" && fc.priority != nil {
+			p = fc.priority.Get(w.ID)
 		}
 		priorities = append(priorities, p)
 	}
