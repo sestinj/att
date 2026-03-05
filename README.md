@@ -1,14 +1,31 @@
-# att
+<p align="center">
+  <a href="https://continue.dev">
+    <img src=".github/assets/continue-banner.png" width="800" alt="Continue" />
+  </a>
+</p>
 
-A tmux-based attention manager for [Claude Code](https://docs.anthropic.com/en/docs/claude-code). Monitor all your Claude Code sessions in one place and jump to whichever one needs you.
+<h1 align="center">att</h1>
+
+<p align="center">A tmux-based attention manager for <a href="https://docs.anthropic.com/en/docs/claude-code">Claude Code</a>. Monitor all your sessions in one place and jump to whichever one needs you.</p>
+
+<p align="center"><em>An autonomous codebase built by the <a href="https://continue.dev/blueprint">Continue Software Factory</a></em></p>
+
+---
 
 ![att demo](https://github.com/sestinj/att/assets/demo.gif)
 
-*An autonomous codebase built by the [Continue Software Factory](https://continue.dev/blueprint)*
-
-## Why
+## Why?
 
 If you run Claude Code across multiple projects, you end up with a bunch of terminal tabs — some waiting for input, some working, some idle. `att` gives you a single dashboard that surfaces exactly which sessions need your attention, so you can stop polling tabs and start responding.
+
+## Table of Contents
+
+- [Install](#install)
+- [Setup](#setup)
+- [Usage](#usage)
+- [How it works](#how-it-works)
+- [Contributing](#contributing)
+- [License](#license)
 
 ## Install
 
@@ -89,6 +106,12 @@ Create `~/.config/att/config.json`:
 
 Sessions are managed through dismiss, snooze, and priority systems so you only see what matters. State is persisted in `~/.config/att/`.
 
+## Contributing
+
+See [CONTRIBUTING.md](CONTRIBUTING.md) for development setup and guidelines.
+
 ## License
 
-MIT
+Apache-2.0 — see [LICENSE](LICENSE) for details.
+
+Copyright (c) 2025 Continue Dev, Inc.
